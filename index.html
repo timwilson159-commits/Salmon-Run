@@ -1,0 +1,1734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Salmon Run — Fish Biology Adventure</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a1a; display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:100vh; }
+  canvas { display:block; cursor:none; }
+  #ui { position:absolute; top:8px; right:8px; display:flex; gap:6px; }
+  .btn-audio {
+    background:rgba(0,20,60,0.85); border:1.5px solid #446; color:#88CCFF;
+    font:bold 11px Arial; padding:4px 8px; border-radius:6px; cursor:pointer;
+    transition:background .15s;
+  }
+  .btn-audio:hover { background:rgba(30,60,120,0.9); }
+  .btn-audio.off { color:#556; border-color:#334; }
+</style>
+</head>
+<body>
+<canvas id="game" width="900" height="560"></canvas>
+<div id="ui">
+  <button class="btn-audio" id="btnMusic">♪ Music</button>
+  <button class="btn-audio" id="btnSfx">◎ SFX</button>
+</div>
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  SALMON RUN  —  Fish Biology Learning Game
+//  Single HTML file, Canvas 2D, keyboard-only (spacebar)
+// ═══════════════════════════════════════════════════════════════
+
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+const W = 900, H = 560;
+const WATER_TOP = 75, WATER_BOT = 510;
+const SALMON_X  = 210;
+
+// ── Global tick ──────────────────────────────────────────────
+let t = 0;
+
+// ── Game state ───────────────────────────────────────────────
+let state = 'START'; // START | PLAYING | QUESTION | JUMP | GAMEOVER
+let level      = 1;
+let score      = 0;
+let health     = 10;
+let strength   = 0;   // 0–100
+let scrollDist = 0;
+let levelLength= 5500;
+let highScore  = 0;
+
+// ── Player ───────────────────────────────────────────────────
+const player = { x: SALMON_X, y: 290, vy: 0, spaceHeld: false };
+const HELI_FORCE = 0.38;
+const MAX_VY     = 5.5;
+const COLL_R    = 8;
+
+// ── Object pools ─────────────────────────────────────────────
+let hooks = [], bottles = [], bears = [], nets = [], rocks = [];
+let worms = [], frogs  = [], hearts= [], qmarks= [], caves = [];
+
+// ── Spawn counters ────────────────────────────────────────────
+let ST = {};
+function resetST() {
+  ST = { hook:180, bottle:150, bear:600, net:1400, rock:280, worm:52, heart:280, cave:900 };
+}
+
+// ── Scroll speed ──────────────────────────────────────────────
+function scrollSpeed() { return 2 + (level - 1) * 0.12; }
+
+// ── Speed boost (W key) ───────────────────────────────────────
+let boostHeld = false;
+const BOOST_EXTRA  = 5;   // extra px/frame added to scroll
+const BOOST_DRAIN  = 0.38; // strength % drained per frame while boosting
+
+// ── Stun / invincibility ──────────────────────────────────────
+let stunTimer = 0, invincible = 0;
+
+// ── Level-end strength quiz ───────────────────────────────────
+let awaitingStrength = false;
+
+// ── Question state ────────────────────────────────────────────
+let curQ = null, qResult = null, qTimer = 0;
+
+// ── Jump state ────────────────────────────────────────────────
+let jp = 0;  // 0=power 1=angle 2=flying 3=result
+let powerVal = 0, powerDir = 1;
+let angleVal = 0, angleDir = 1;
+let jX = 0, jY = 0, jVX = 0, jVY = 0;
+let jumpResult = '', jumpTimer = 0, jumpAttempts = 0;
+let jHasLeft = false, jumpPhase = 0;
+let windForce = 0;
+const JUMP_GRAV = 0.22;
+
+function jumpLayout() {
+  if (level >= 5) {
+    const lv = level - 5;
+    const LP_R=300, LP_SRF=315, LP_BANK=432;
+    const MP_L=375, MP_R=565, MP_SRF=235, MP_BANK=432;
+    const RP_L=Math.min(645+lv*20,820), RP_R=900, RP_SRF=Math.max(95,158-lv*23), RP_BANK=432;
+    const landW=Math.max(65,148-lv*26);
+    return { two:true, LP_R,LP_SRF,LP_BANK, MP_L,MP_R,MP_SRF,MP_BANK,
+             RP_L,RP_R,RP_SRF,RP_BANK, landW, salmonStartX:215,salmonStartY:LP_SRF+28 };
+  }
+  const ge=(level-1)*41, he=(level-1)*36;
+  const LP_R=450, RP_L=515+ge, RP_R=900;
+  const LP_SRF=305, LP_BANK=432;
+  const RP_SRF=Math.max(85,200-he), RP_BANK=432;
+  const landW=Math.max(80,225-(level-1)*52);
+  return { two:false, LP_SRF,LP_BANK,LP_R, RP_SRF,RP_BANK,RP_L,RP_R,
+           landW, salmonStartX:338,salmonStartY:LP_SRF+28 };
+}
+
+function getJumpPonds(L) {
+  if (!L.two || jumpPhase===0) {
+    return { srcR:L.LP_R, srcSRF:L.LP_SRF, srcBANK:L.LP_BANK,
+             tgtL:L.two?L.MP_L:L.RP_L, tgtR:L.two?L.MP_R:L.RP_R,
+             tgtSRF:L.two?L.MP_SRF:L.RP_SRF, tgtBANK:L.two?L.MP_BANK:L.RP_BANK };
+  }
+  return { srcR:L.MP_R, srcSRF:L.MP_SRF, srcBANK:L.MP_BANK,
+           tgtL:L.RP_L, tgtR:L.RP_R, tgtSRF:L.RP_SRF, tgtBANK:L.RP_BANK };
+}
+
+function generateWind() {
+  if (level<3) { windForce=0; return; }
+  const maxW=0.28+(level-3)*0.09;
+  windForce=Math.round((Math.random()*2-1)*maxW*10)/10;
+  if (Math.abs(windForce)<0.06) windForce=0;
+}
+
+function drawWindIndicator() {
+  if (!windForce) return;
+  const dir=windForce>0?1:-1;
+  const maxW=0.28+(level-3)*0.09;
+  const pct=Math.min(1,Math.abs(windForce)/maxW);
+  const col=pct<0.4?'#FFEE44':pct<0.75?'#FF8822':'#FF3333';
+  const bx=W/2-155, by=104;
+  ctx.fillStyle='rgba(0,0,40,0.82)'; ctx.fillRect(bx,by,310,50);
+  ctx.strokeStyle=col; ctx.lineWidth=2; ctx.strokeRect(bx,by,310,50);
+  ctx.fillStyle=col; ctx.font='bold 12px "Courier New"'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('WIND',bx+10,by+25);
+  const barX=bx+62, bw=170, barY=by+18;
+  ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(barX,barY,bw,14);
+  ctx.fillStyle=col;
+  if (dir>0) ctx.fillRect(barX+bw/2,barY,pct*bw/2,14);
+  else ctx.fillRect(barX+bw/2-pct*bw/2,barY,pct*bw/2,14);
+  ctx.fillStyle='rgba(255,255,255,0.55)'; ctx.fillRect(barX+bw/2-1,barY-2,2,18);
+  const str=pct<0.4?'LIGHT':pct<0.75?'MODERATE':'STRONG';
+  ctx.fillStyle=col; ctx.font='9px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(str,barX+bw/2,barY+16);
+  ctx.fillStyle=col; ctx.font='bold 28px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(dir>0?'→':'←',bx+285,by+25);
+}
+
+function jumpThreshold() { return Math.min(72 + (level - 1) * 5, 93); }
+
+// ─────────────────────────────────────────────────────────────
+//  QUESTION BANK
+// ─────────────────────────────────────────────────────────────
+const QBANK = [
+
+  // ═══════════════════════════════════════════════════════
+  //  GREEN — easy (45 questions)
+  // ═══════════════════════════════════════════════════════
+  { d:'green', q:'What organ do fish use to breathe underwater?',
+    o:['Lungs','Gills','Skin','Kidneys'], a:1 },
+  { d:'green', q:'What is the large fin on top of a fish\'s back called?',
+    o:['Pectoral fin','Caudal fin','Dorsal fin','Anal fin'], a:2 },
+  { d:'green', q:'What is a fish\'s tail fin called?',
+    o:['Dorsal fin','Pelvic fin','Caudal fin','Anal fin'], a:2 },
+  { d:'green', q:'What are the paired "arm" fins near a fish\'s head called?',
+    o:['Caudal fins','Pectoral fins','Pelvic fins','Anal fins'], a:1 },
+  { d:'green', q:'What does the stomach do in a fish?',
+    o:['Pumps blood','Makes oxygen','Breaks down food','Filters waste'], a:2 },
+  { d:'green', q:'What is the largest fish species in the ocean?',
+    o:['Great White Shark','Blue Whale','Giant Manta Ray','Whale Shark'], a:3 },
+  { d:'green', q:'What is a shark\'s skeleton made of?',
+    o:['Bone','Wood','Cartilage','Shell'], a:2 },
+  { d:'green', q:'What do bony fish use to stay at a chosen depth?',
+    o:['Their fins','Swim bladder','Air pockets under skin','Fatty liver'], a:1 },
+  { d:'green', q:'What covers the body of most bony fish?',
+    o:['Fur','Feathers','Scales','Smooth skin only'], a:2 },
+  { d:'green', q:'Where is a ray\'s mouth located on its body?',
+    o:['On top','On the side','On the underside','Behind its eyes'], a:2 },
+  { d:'green', q:'What is the heart\'s main job in a fish?',
+    o:['Filter blood','Pump blood around the body','Digest food','Produce oxygen'], a:1 },
+  { d:'green', q:'Do sharks have a swim bladder like most bony fish?',
+    o:['Yes — all fish have one','No — they use a large oily liver','Only young sharks','Yes but tiny'], a:1 },
+  { d:'green', q:'What is a ray\'s flattened body shape useful for?',
+    o:['Swimming much faster','Hiding on the seafloor','Jumping above water','Gliding through air'], a:1 },
+  { d:'green', q:'How do rays breathe when resting on the seafloor?',
+    o:['Through their mouth','Through spiracles on top of the head','Through their skin','By surfacing for air'], a:1 },
+  { d:'green', q:'What is the gill cover on a bony fish called?',
+    o:['Operculum','Spiracle','Caudal flap','Lateral guard'], a:0 },
+  { d:'green', q:'What does the liver produce to help digest fats?',
+    o:['Acid','Bile','Blood cells','Mucus'], a:1 },
+  { d:'green', q:'Which organ filters waste products from a fish\'s blood?',
+    o:['Liver','Stomach','Kidneys','Spleen'], a:2 },
+  { d:'green', q:'What does the lateral line on a fish\'s body detect?',
+    o:['Colour and light','Temperature only','Pressure waves and vibrations','Electrical fields only'], a:2 },
+  { d:'green', q:'What organ produces eggs or sperm in a fish?',
+    o:['Stomach','Gonads','Liver','Spleen'], a:1 },
+  { d:'green', q:'Fish that eat only plants are called what?',
+    o:['Carnivores','Omnivores','Herbivores','Detritivores'], a:2 },
+  { d:'green', q:'What shape are a ray\'s pectoral fins compared to other fish?',
+    o:['Small and stubby','Long and wing-like','Absent entirely','Forked like a tail'], a:1 },
+  { d:'green', q:'Where are a ray\'s eyes located on its body?',
+    o:['On the underside','On top of the body','Behind its mouth','On the tip of its snout'], a:1 },
+  { d:'green', q:'What is a fish\'s backbone (spine column) called?',
+    o:['Femur','Cranium','Vertebral column','Rib cage'], a:2 },
+  { d:'green', q:'What does the intestine do in a fish?',
+    o:['Filters blood','Pumps water','Absorbs nutrients from food','Stores oxygen'], a:2 },
+  { d:'green', q:'Fish that eat both plants and animals are called what?',
+    o:['Herbivores','Carnivores','Omnivores','Detritivores'], a:2 },
+  { d:'green', q:'What do gills do to the blood flowing through them?',
+    o:['Add nutrients','Add oxygen and remove carbon dioxide','Remove oxygen','Add carbon dioxide'], a:1 },
+  { d:'green', q:'What is a very young fish called?',
+    o:['Pup','Cub','Fry','Hatchling'], a:2 },
+  { d:'green', q:'What are pectoral fins mainly used for in fish?',
+    o:['Breathing','Steering and braking','Making sounds','Digesting food'], a:1 },
+  { d:'green', q:'What organ inside the skull controls a fish\'s behaviour?',
+    o:['Liver','Brain','Spleen','Pancreas'], a:1 },
+  { d:'green', q:'What do fish use to smell their environment?',
+    o:['Whiskers','Lateral line','Nostrils and olfactory organs','Their tongue only'], a:2 },
+  { d:'green', q:'What does a streamlined body shape help a fish do?',
+    o:['Breathe better','Move through water with less resistance','Store more food','See further'], a:1 },
+  { d:'green', q:'What colour is the blood of most fish?',
+    o:['Blue','Green','Red','Clear'], a:2 },
+  { d:'green', q:'What do the pelvic fins near a fish\'s belly help with?',
+    o:['Propulsion forward','Breathing','Stability and slowing down','Detecting prey'], a:2 },
+  { d:'green', q:'What fin is found on the underside of a fish near the tail?',
+    o:['Pectoral fin','Caudal fin','Dorsal fin','Anal fin'], a:3 },
+  { d:'green', q:'How do most bony fish reproduce?',
+    o:['Give birth like mammals','By budding','By laying eggs','By splitting in two'], a:2 },
+  { d:'green', q:'What are gill slits on a shark used for?',
+    o:['Releasing water that passed over gills','Detecting pressure','Filtering food','Controlling buoyancy'], a:0 },
+  { d:'green', q:'Why would a fish die quickly if taken out of water?',
+    o:['It gets too cold','Its fins dry out','It cannot get oxygen from air through gills','Its scales fall off'], a:2 },
+  { d:'green', q:'What do we call fish that live near the seafloor?',
+    o:['Pelagic fish','Surface fish','Demersal fish','Migratory fish'], a:2 },
+  { d:'green', q:'Most stingrays give birth to live young — true or false?',
+    o:['False — they always lay eggs','True — most give live birth','True — only in freshwater','False — they clone themselves'], a:1 },
+  { d:'green', q:'What is the scientific class name for sharks, rays and skates?',
+    o:['Osteichthyes','Actinopterygii','Chondrichthyes','Agnatha'], a:2 },
+  { d:'green', q:'Why do humans value fish as a food source?',
+    o:['They are easy to farm on land','They are a rich source of protein and healthy fats','They require no cooking','They can replace vegetables entirely'], a:1 },
+  { d:'green', q:'What does the gall bladder store in a fish?',
+    o:['Eggs','Bile produced by the liver','Toxins from the blood','Stomach acid'], a:1 },
+  { d:'green', q:'What word describes the upper (back) surface of a fish?',
+    o:['Dorsal','Ventral','Lateral','Posterior'], a:0 },
+  { d:'green', q:'How many gill slits do most sharks have on each side of the head?',
+    o:['Two','Five','Eight','One'], a:1 },
+  { d:'green', q:'What are fish that eat mainly other fish called?',
+    o:['Herbivores','Detritivores','Piscivores','Omnivores'], a:2 },
+
+  // ═══════════════════════════════════════════════════════
+  //  YELLOW — medium (36 questions)
+  // ═══════════════════════════════════════════════════════
+  { d:'yellow', q:'What is the scientific class name for bony fish?',
+    o:['Chondrichthyes','Osteichthyes','Agnatha','Mammalia'], a:1 },
+  { d:'yellow', q:'What is the operculum\'s role in bony fish?',
+    o:['Protects gills and pumps water over them','Stores bile','A vibration sense organ','Controls buoyancy'], a:0 },
+  { d:'yellow', q:'What are gill rakers used for in filter-feeding fish like whale sharks?',
+    o:['Producing mucus','Trapping food particles from water','Providing structural support','Sensing temperature'], a:1 },
+  { d:'yellow', q:'What are the finger-like extensions off a fish\'s intestine called?',
+    o:['Pyloric caeca','Weberian ossicles','Gill arches','Spiracles'], a:0 },
+  { d:'yellow', q:'What do pyloric caeca do in a fish\'s digestive system?',
+    o:['Pump water over gills','Store bile','Increase surface area for nutrient absorption','Filter waste from blood'], a:2 },
+  { d:'yellow', q:'What is contained inside a bony fish\'s swim bladder?',
+    o:['Water','Blood cells','Digestive enzymes','Gas (mainly oxygen and nitrogen)'], a:3 },
+  { d:'yellow', q:'What is the term for fish that migrate from the sea into rivers to spawn?',
+    o:['Demersal','Pelagic','Anadromous','Catadromous'], a:2 },
+  { d:'yellow', q:'What type of scale found on sharks is structurally similar to a tiny tooth?',
+    o:['Cycloid','Ctenoid','Placoid','Ganoid'], a:2 },
+  { d:'yellow', q:'What does the spleen do in a fish?',
+    o:['Produces bile','Filters old blood cells and supports immunity','Pumps water over gills','Produces digestive enzymes'], a:1 },
+  { d:'yellow', q:'What does examining a dissected fish\'s stomach contents tell you?',
+    o:['The age of the fish','What the fish had been feeding on','Whether the fish is healthy','How fast it can swim'], a:1 },
+  { d:'yellow', q:'What are myomeres in a fish\'s body?',
+    o:['Segments of blood vessels','Segments of muscle tissue','Rows of scales','Folds in the intestine'], a:1 },
+  { d:'yellow', q:'What is the main difference between pelagic and demersal fish?',
+    o:['Pelagic are saltwater; demersal freshwater','Pelagic live in open water; demersal near the seafloor','Pelagic have scales; demersal do not','Pelagic are always carnivores'], a:1 },
+  { d:'yellow', q:'Why must many sharks keep swimming constantly?',
+    o:['No swim bladder — pectoral fins create lift like wings','They need exercise to stay warm','To keep scales clean','They are always chasing prey'], a:0 },
+  { d:'yellow', q:'What is the purpose of a stingray\'s barbed tail spine?',
+    o:['Propulsion','Defence against predators','Detecting prey','Attracting mates'], a:1 },
+  { d:'yellow', q:'What does the anal fin of a fish help with?',
+    o:['Breathing','Propulsion forward','Stability and preventing rolling','Detecting prey below'], a:2 },
+  { d:'yellow', q:'What is bioluminescence in deep-sea fish?',
+    o:['Reflecting moonlight off scales','Producing their own light via chemical reactions','A type of electric shock defence','Glowing from absorbed sunlight'], a:1 },
+  { d:'yellow', q:'What are the Ampullae of Lorenzini in sharks used for?',
+    o:['Smelling blood from far away','Detecting electrical fields from living things','Filtering food particles','Regulating body temperature'], a:1 },
+  { d:'yellow', q:'Why do many deep-sea fish have very large eyes?',
+    o:['To scare away predators','To see colour better in darkness','To capture as much light as possible','To communicate with other fish'], a:2 },
+  { d:'yellow', q:'What does the pancreas produce in a fish?',
+    o:['Bile to digest fat','Digestive enzymes and hormones (including insulin)','Red blood cells','Mucus to coat the gut'], a:1 },
+  { d:'yellow', q:'What does countercurrent exchange in fish gills mean?',
+    o:['Blood and water flow the same way','Blood and water flow opposite, maximising oxygen transfer','Gills reverse flow with the tide','Blood circulates backwards'], a:1 },
+  { d:'yellow', q:'What do gill arches provide in a fish?',
+    o:['Buoyancy control','Structural support for gill filaments','Sensory input about water chemistry','Connection between heart and gills'], a:1 },
+  { d:'yellow', q:'Why do some fish have brightly coloured bodies?',
+    o:['To attract predators','All fish are brightly coloured','Warning, camouflage, or attracting mates','To absorb sunlight for warmth'], a:2 },
+  { d:'yellow', q:'What does the rectal gland do in sharks?',
+    o:['Absorbs final nutrients','Excretes excess salt to maintain water balance','Stores waste before excretion','Produces digestive enzymes'], a:1 },
+  { d:'yellow', q:'What does the colour of a fish\'s gills tell you during dissection?',
+    o:['How old it is','Health — bright red = healthy; pale = poor oxygen uptake','What it was eating','Its reproductive stage'], a:1 },
+  { d:'yellow', q:'Why do rays have their gill openings on the underside?',
+    o:['More efficient filtering','The topside would inhale sand from the seafloor','To breathe in sediment','Rays evolved from whales'], a:1 },
+  { d:'yellow', q:'What is the cloaca in fish?',
+    o:['A type of dorsal fin','A single opening for waste and reproduction','The stomach lining','A muscular valve in the gut'], a:1 },
+  { d:'yellow', q:'Why is overfishing a serious problem for fish populations?',
+    o:['It warms the water','Fish are removed faster than they can reproduce, causing collapse','It introduces disease','It only affects rare species'], a:1 },
+  { d:'yellow', q:'What does examining the gonads of a dissected fish reveal?',
+    o:['What it eats','Its swimming speed','Its reproductive maturity and spawning readiness','Its age'], a:2 },
+  { d:'yellow', q:'Which part of the digestive system connects the stomach to the intestine?',
+    o:['Oesophagus','Pylorus','Cloaca','Rectum'], a:1 },
+  { d:'yellow', q:'Why is a cartilaginous skeleton useful for sharks in deep water?',
+    o:['It is harder than bone under pressure','It is lighter than bone, aiding buoyancy','It contains more minerals','It grows faster than bone'], a:1 },
+  { d:'yellow', q:'What does the term "ventral" mean in fish anatomy?',
+    o:['Relating to the back/top surface','Relating to the underside/belly','Relating to the tail end','Relating to the head end'], a:1 },
+  { d:'yellow', q:'What makes sharks\' sense of smell particularly powerful?',
+    o:['Nostrils twice as large as other fish\'s','A large part of the brain dedicated to smell','Their scales absorb chemical signals','Gill filters that concentrate scent'], a:1 },
+  { d:'yellow', q:'In physostomous fish (like salmon), how does gas enter the swim bladder?',
+    o:['Via the pneumatic duct connected to the gut','Absorbed from blood via the gas gland','Swallowed from the surface','Through spiracles'], a:0 },
+  { d:'yellow', q:'What is the olfactory organ in fish primarily responsible for?',
+    o:['Detecting chemical signals in the water (smell)','Detecting vibrations','Regulating blood pressure','Controlling breathing rhythm'], a:0 },
+  { d:'yellow', q:'What does a pale, yellowy enlarged liver suggest about a dissected fish?',
+    o:['The fish was very old','The fish was storing large fat/oil reserves','The fish was diseased with infection','The fish was from freshwater'], a:1 },
+  { d:'yellow', q:'Sharks belong to which class of fish?',
+    o:['Osteichthyes','Agnatha','Chondrichthyes','Actinopterygii'], a:2 },
+
+  // ═══════════════════════════════════════════════════════
+  //  RED — hard (25 questions)
+  // ═══════════════════════════════════════════════════════
+  { d:'red', q:'What can inspecting the stomach contents of a dissected fish tell you?',
+    o:['Its exact age','Its diet and ecological role in the food web','Whether it was male or female','How fast it could swim'], a:1 },
+  { d:'red', q:'Why is managing fish stocks important in the real world?',
+    o:['To make fish more colourful','Prevents overfishing so populations stay sustainable for ecosystems and food','To keep rivers free of debris','To stop sharks migrating'], a:1 },
+  { d:'red', q:'What type of scale unique to sharks and rays is structurally identical to a tiny tooth?',
+    o:['Cycloid scale','Ctenoid scale','Placoid scale (dermal denticle)','Ganoid scale'], a:2 },
+  { d:'red', q:'Which chamber of the fish heart is the FIRST to receive blood returning from the body?',
+    o:['Ventricle','Atrium','Conus arteriosus','Sinus venosus'], a:3 },
+  { d:'red', q:'What do Weberian ossicles in some fish (e.g. catfish) do?',
+    o:['Support the tail fin rays','Transmit swim bladder vibrations to the inner ear','Connect gills to the jaw','Filter food from water'], a:1 },
+  { d:'red', q:'What is the significance of the spiral valve in a shark\'s intestine?',
+    o:['Controls how fast food moves','Increases surface area for absorption in a short gut','Pumps water through the gut','Separates digestive fluids'], a:1 },
+  { d:'red', q:'What do enlarged, engorged gonads in a dissected fish indicate?',
+    o:['Malnutrition','The fish is near its spawning (breeding) season','Parasitic infection','The fish is a juvenile'], a:1 },
+  { d:'red', q:'What do otoliths (ear stones) found inside a fish\'s skull reveal?',
+    o:['What the fish was eating','How fast the fish could swim','The age of the fish — like tree rings','The fish\'s sex'], a:2 },
+  { d:'red', q:'Why would pale, undersized organs in a dissected fish be concerning?',
+    o:['It means the fish was very old','May indicate malnutrition, disease, or heavy parasite load','Normal in all deep-sea species','Shows the fish was male'], a:1 },
+  { d:'red', q:'What is biomagnification, and why is it concerning with predatory fish?',
+    o:['Fish grow larger over time','Toxins like mercury increase in concentration up the food chain','A technique for magnifying fish cells','Fish populations rebounding after overfishing'], a:1 },
+  { d:'red', q:'If a fish population\'s average size decreases over generations, what likely caused it?',
+    o:['Warmer water speeding growth','Overfishing removing large fish before they can reproduce','A new food source improving health','Disease shrinking the fish'], a:1 },
+  { d:'red', q:'What does the gonado-somatic index (GSI) measure, and why is it useful in conservation?',
+    o:['Brain-to-body ratio','Gonad weight relative to body — indicates reproductive investment','Gill area relative to body — indicates oxygen demands','Liver size relative to body'], a:1 },
+  { d:'red', q:'What does a parasitic worm in a dissected fish\'s gut tell a marine biologist?',
+    o:['The fish was very old','Nothing — parasites are random','Information about the food web — parasites cycle through multiple hosts','The fish came from polluted water'], a:2 },
+  { d:'red', q:'How does the Ampullae of Lorenzini in rays differ from that in sharks?',
+    o:['Rays lack this system entirely','Both have it — but in rays the pores spread across the disc','Rays have weaker fields and cannot detect prey this way','Sharks have ampullae only near their tail'], a:1 },
+  { d:'red', q:'Why do male sharks and rays have pelvic fins modified into claspers?',
+    o:['To stabilise on the seafloor','For internal fertilisation of females','As display to rival males','To anchor to rocks in strong currents'], a:1 },
+  { d:'red', q:'What does fatty liver tissue in a dissected fish suggest about its recent diet?',
+    o:['The fish was starving','The fish had been eating well and storing energy as fat','The fish had a liver fluke infection','The fish lived in very cold water'], a:1 },
+  { d:'red', q:'What does "maximum sustainable yield" mean in fisheries management?',
+    o:['The largest single fish ever caught','Maximum catch possible without reducing the population\'s ability to recover','Total weight of all fish in an area','The minimum legal size for catching fish'], a:1 },
+  { d:'red', q:'Why do some fish school (swim in large groups), and what anatomy enables it?',
+    o:['To share body heat — warm-blooded fish school more','To confuse predators, coordinated via the lateral line system','To compete for food more effectively','Schooling is random with no biological advantage'], a:1 },
+  { d:'red', q:'What does the hepatosomatic index (HSI) in fish measure, and what does a high HSI suggest?',
+    o:['Heart-to-body ratio — high HSI means high activity','Liver-to-body ratio — high HSI means large fat/oil reserves','Head-to-spine ratio — high HSI means old age','Haemoglobin index — high HSI means healthy gills'], a:1 },
+  { d:'red', q:'Why do elasmobranchs (sharks/rays) retain urea in their blood?',
+    o:['It acts as an antifreeze','It matches their blood osmolarity to seawater, reducing water loss','It powers muscle contraction','It replaces the need for gills'], a:1 },
+  { d:'red', q:'What does the presence of multiple growth bands in an otolith indicate?',
+    o:['Repeated infections','Seasonal growth cycles — each pair of bands typically represents one year','Diet changes','Migration between salt and fresh water'], a:1 },
+  { d:'red', q:'How does a large, oil-rich liver help a shark like the Greenland shark with buoyancy?',
+    o:['The liver is filled with gas','It stores squalene — a low-density oil — providing lift without a swim bladder','It produces extra blood cells lighter than water','The liver absorbs nitrogen for lift'], a:1 },
+  { d:'red', q:'What is the ecological consequence of removing apex predators like large sharks?',
+    o:['No effect — smaller fish replace them','Prey populations explode, damaging food webs and reef ecosystems (trophic cascade)','The ecosystem becomes more productive','Only affects deep-water environments'], a:1 },
+  { d:'red', q:'What is the term "anadromous" used to describe?',
+    o:['Fish that live only in caves','Fish that migrate from sea to freshwater to spawn','Fish that breathe air at the surface','Fish that never migrate'], a:1 },
+  { d:'red', q:'How does gill structure differ between elasmobranchs (sharks/rays) and teleosts (bony fish)?',
+    o:['Elasmobranchs have gills on top; teleosts on the side','Elasmobranchs have separate exposed gill slits; teleosts have one operculum covering all gills','Elasmobranchs use lungs as backup; teleosts never do','Teleosts cannot breathe in saltwater; elasmobranchs can'], a:1 },
+];
+
+let askedQs = new Set();
+function pickQuestion(diff) {
+  let pool = QBANK.filter(q => q.d === diff && !askedQs.has(q));
+  if (!pool.length) { askedQs.clear(); pool = QBANK.filter(q => q.d === diff); }
+  const q = pool[Math.floor(Math.random() * pool.length)];
+  askedQs.add(q);
+  return { ...q };
+}
+
+// ─────────────────────────────────────────────────────────────
+//  AUDIO
+// ─────────────────────────────────────────────────────────────
+let musicOn = true, sfxOn = true;
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+function playTone(freq, type, dur, vol=0.18, delay=0) {
+  if (!sfxOn) return;
+  try {
+    const a=getAudio(), o=a.createOscillator(), g=a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.type=type; o.frequency.setValueAtTime(freq,a.currentTime+delay);
+    g.gain.setValueAtTime(vol,a.currentTime+delay);
+    g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+delay+dur);
+    o.start(a.currentTime+delay); o.stop(a.currentTime+delay+dur);
+  } catch(e){}
+}
+function sfxCollect(pts) {
+  const f=pts===50?440:pts===100?550:880;
+  playTone(f,'sine',0.12,0.15);
+  if (pts===250) playTone(f*1.5,'sine',0.15,0.1,0.08);
+}
+function sfxFrog()   { [880,1100,1320].forEach((f,i)=>playTone(f,'sine',0.12,0.18,i*0.06)); }
+function sfxHit()    { playTone(150,'sawtooth',0.18,0.28); }
+function sfxWrong()  { [330,220].forEach((f,i)=>playTone(f,'square',0.15,0.18,i*0.1)); }
+function sfxRight()  { [440,550,660].forEach((f,i)=>playTone(f,'sine',0.12,0.18,i*0.07)); }
+function sfxSplash() { [220,440,880,440].forEach((f,i)=>playTone(f,'sine',0.1,0.2,i*0.05)); }
+function sfxMiss()   { [330,220,150].forEach((f,i)=>playTone(f,'sawtooth',0.1,0.2,i*0.07)); }
+function sfxHeart()  { playTone(660,'sine',0.15,0.2); playTone(880,'sine',0.12,0.15,0.1); }
+
+let musicInterval = null;
+const MUSIC_NOTES = [261,330,392,523,392,330,349,440,523,440,349,330];
+let musicIdx = 0;
+function startMusic() {
+  if (musicInterval) return;
+  musicInterval = setInterval(()=>{
+    if (!musicOn) return;
+    playTone(MUSIC_NOTES[musicIdx%MUSIC_NOTES.length],'triangle',0.22,0.06);
+    musicIdx++;
+  },220);
+}
+function stopMusic() { clearInterval(musicInterval); musicInterval=null; }
+
+document.getElementById('btnMusic').addEventListener('click',()=>{
+  musicOn=!musicOn;
+  document.getElementById('btnMusic').classList.toggle('off',!musicOn);
+  if (musicOn) startMusic(); else stopMusic();
+});
+document.getElementById('btnSfx').addEventListener('click',()=>{
+  sfxOn=!sfxOn;
+  document.getElementById('btnSfx').classList.toggle('off',!sfxOn);
+});
+
+// ─────────────────────────────────────────────────────────────
+//  BUBBLES
+// ─────────────────────────────────────────────────────────────
+const bubbles = [];
+function initBubbles() {
+  bubbles.length = 0;
+  for (let i=0;i<30;i++) bubbles.push(mkBubble(Math.random()*W,true));
+}
+function mkBubble(x,anyY=false) {
+  return { x, y:anyY?WATER_TOP+Math.random()*(WATER_BOT-WATER_TOP)*0.9:WATER_BOT-20,
+           r:1.5+Math.random()*3.5, sp:0.25+Math.random()*0.45,
+           wb:Math.random()*6.28, ws:0.018+Math.random()*0.022 };
+}
+function updateBubbles(minY=WATER_TOP,maxY=WATER_BOT) {
+  for (const b of bubbles) {
+    b.y-=b.sp; b.wb+=b.ws; b.x+=Math.sin(b.wb)*0.35;
+    if (b.y<minY) { b.y=maxY-10; b.x=Math.random()*W; b.r=1.5+Math.random()*3.5; }
+  }
+}
+function drawBubbles() {
+  for (const b of bubbles) {
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    ctx.strokeStyle='rgba(168,228,255,0.4)'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle='rgba(168,228,255,0.07)'; ctx.fill();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BACKGROUND
+// ─────────────────────────────────────────────────────────────
+const ENV = [
+  { skyTop:'#87CEEB', skyBot:'#b8e8ff', waterTop:'#2896c8', waterBot:'#0d4f7a', bedTop:'#8B6914', plantCols:['#2d8a3e','#3dab52','#1a6628'] },
+  { skyTop:'#C8A870', skyBot:'#F0C860', waterTop:'#1a7090', waterBot:'#0a3858', bedTop:'#5C4020', plantCols:['#4A6820','#6A9830','#3A5010'] },
+  { skyTop:'#B0C8F0', skyBot:'#D8E8FF', waterTop:'#206888', waterBot:'#102840', bedTop:'#484848', plantCols:['#486848','#688068','#304830'] },
+  { skyTop:'#FF9060', skyBot:'#FFB080', waterTop:'#288888', waterBot:'#105050', bedTop:'#604828', plantCols:['#388048','#509860','#287038'] },
+];
+function env() { return ENV[(level-1)%ENV.length]; }
+
+function drawBackground() {
+  const e=env();
+  const sg=ctx.createLinearGradient(0,0,0,WATER_TOP);
+  sg.addColorStop(0,e.skyTop); sg.addColorStop(1,e.skyBot);
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,WATER_TOP);
+
+  const wg=ctx.createLinearGradient(0,WATER_TOP,0,WATER_BOT);
+  wg.addColorStop(0,e.waterTop); wg.addColorStop(1,e.waterBot);
+  ctx.fillStyle=wg; ctx.fillRect(0,WATER_TOP,W,WATER_BOT-WATER_TOP);
+
+  for (let i=0;i<5;i++) {
+    const rx=80+i*200+Math.sin(t*0.008+i*1.2)*20;
+    const rg=ctx.createLinearGradient(rx,WATER_TOP,rx+30,460);
+    rg.addColorStop(0,'rgba(255,255,255,0.07)'); rg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.moveTo(rx-10,WATER_TOP); ctx.lineTo(rx+44,WATER_TOP);
+    ctx.lineTo(rx+58,WATER_BOT-60); ctx.lineTo(rx-4,WATER_BOT-60); ctx.closePath(); ctx.fill();
+  }
+
+  ctx.beginPath(); ctx.moveTo(0,WATER_TOP);
+  for (let x=0;x<=W;x+=4)
+    ctx.lineTo(x,WATER_TOP+Math.sin(x*0.022+t*0.04)*3.5+Math.sin(x*0.054+t*0.026)*1.8);
+  ctx.lineTo(W,0); ctx.lineTo(0,0); ctx.closePath();
+  const fg=ctx.createLinearGradient(0,WATER_TOP-8,0,WATER_TOP+14);
+  fg.addColorStop(0,'#a8e4ff'); fg.addColorStop(1,e.waterTop);
+  ctx.fillStyle=fg; ctx.fill();
+
+  ctx.fillStyle='#5C420A'; ctx.fillRect(0,WATER_BOT,W,H-WATER_BOT);
+  ctx.fillStyle=e.bedTop;
+  ctx.beginPath(); ctx.moveTo(0,WATER_BOT+3);
+  for (let x=0;x<=W;x+=7)
+    ctx.lineTo(x,WATER_BOT+2+Math.sin(x*0.14+scrollDist*0.009)*4);
+  ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.closePath(); ctx.fill();
+
+  drawScrollingPlants(e.plantCols);
+}
+
+const PLT_SP = 85;
+function drawScrollingPlants(cols) {
+  const n=Math.ceil(W/PLT_SP)+2;
+  const off=scrollDist%PLT_SP;
+  const fi=Math.floor(scrollDist/PLT_SP);
+  for (let i=0;i<n;i++) {
+    const pi=fi+i;
+    const px=i*PLT_SP-off;
+    const seed=((pi*2654435761)>>>0)%1000;
+    const ph=40+(seed%6)*10;
+    const pc=cols[seed%3];
+    const sway=Math.sin(t*0.03+pi*1.4)*9;
+    ctx.strokeStyle=pc; ctx.lineWidth=4; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(px,WATER_BOT);
+    ctx.quadraticCurveTo(px+sway*0.5,WATER_BOT-ph*0.5,px+sway,WATER_BOT-ph);
+    ctx.stroke();
+    for (let l=0;l<3;l++) {
+      const ly=WATER_BOT-ph*(0.28+l*0.26);
+      const lx=px+sway*(0.28+l*0.28);
+      const d=(seed%3+l)%2===0?1:-1;
+      ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(lx,ly);
+      ctx.quadraticCurveTo(lx+d*16+sway*0.4,ly-9,lx+d*6,ly-20); ctx.stroke();
+    }
+    if (seed%4===0) {
+      ctx.fillStyle=`hsl(${30+seed%30},${20+seed%20}%,${30+seed%20}%)`;
+      ctx.beginPath(); ctx.ellipse(px+(seed%40)-20,WATER_BOT+10,10+(seed%14),6+(seed%5),0,0,Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PLAYER SPRITE
+// ─────────────────────────────────────────────────────────────
+function drawSalmon(x,y,wagScale=1.0) {
+  const w=Math.sin(t*0.13)*10*wagScale;
+  ctx.save(); ctx.translate(x,y); ctx.scale(0.5,1);
+  if (stunTimer>0 && Math.floor(t/3)%2===0) ctx.globalAlpha=0.5;
+  ctx.fillStyle='#CC5533';
+  ctx.beginPath(); ctx.moveTo(-44,0); ctx.lineTo(-62,-14+w); ctx.lineTo(-58,0); ctx.lineTo(-62,14-w); ctx.closePath(); ctx.fill();
+  const bg=ctx.createLinearGradient(-40,-15,-40,15);
+  bg.addColorStop(0,'#E8704A'); bg.addColorStop(0.5,'#F4A57A'); bg.addColorStop(1,'#D05828');
+  ctx.fillStyle=bg; ctx.beginPath(); ctx.ellipse(0,0,42,15,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='rgba(255,200,160,0.4)';
+  ctx.beginPath(); ctx.ellipse(2,5,32,8,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#B04020';
+  [[-6,-9,5,3],[11,-10,4,2.5],[23,-6,3,2],[-20,-4,4,2.5]].forEach(([sx,sy,sw,sh])=>{
+    ctx.beginPath(); ctx.ellipse(sx,sy,sw,sh,-0.3,0,Math.PI*2); ctx.fill();
+  });
+  ctx.fillStyle='#CC5533';
+  ctx.beginPath(); ctx.moveTo(-9,-15); ctx.lineTo(6,-27); ctx.lineTo(22,-15); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#D06040';
+  ctx.beginPath(); ctx.moveTo(0,8); ctx.lineTo(-12,18); ctx.lineTo(14,12); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(27,-5,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1a1a1a'; ctx.beginPath(); ctx.arc(28,-5,2.8,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(29,-6.5,0.9,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#884422'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(38,-2); ctx.lineTo(42,-4); ctx.stroke();
+  ctx.restore();
+}
+
+function drawStunEffect() {
+  if (stunTimer>0) {
+    ctx.fillStyle=`rgba(255,60,60,${stunTimer/30*0.38})`;
+    ctx.fillRect(0,0,W,H);
+    stunTimer--;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  OBSTACLES
+// ─────────────────────────────────────────────────────────────
+function drawHook(h) {
+  const sw=Math.sin(t*0.04+h.x*0.01)*(7+h.len*0.015);
+  const hx=h.x+sw, hy=WATER_TOP+h.len;
+  ctx.strokeStyle='rgba(200,200,200,0.4)'; ctx.lineWidth=1; ctx.setLineDash([3,5]);
+  ctx.beginPath(); ctx.moveTo(h.x,2); ctx.lineTo(h.x,WATER_TOP); ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle='rgba(200,200,200,0.75)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(h.x,WATER_TOP); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.strokeStyle='#D0D0D0'; ctx.lineWidth=2; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(hx,hy); ctx.arc(hx-3.5,hy+5.5,5.5,-Math.PI*0.5,Math.PI*0.65); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(hx-3.5+5.5*Math.cos(Math.PI*0.65),hy+5.5+5.5*Math.sin(Math.PI*0.65));
+  ctx.lineTo(hx-5.5,hy+3.5); ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(hx+1,hy+1,1,0,Math.PI*2); ctx.fill();
+  h.hx=hx-3.5; h.hy=hy+4; h.hr=5;
+}
+
+function drawBottle(b) {
+  const tilt=Math.sin(t*0.05+b.x*0.012)*0.28;
+  ctx.save(); ctx.translate(b.x,b.y); ctx.rotate(tilt); ctx.scale(0.5,0.5);
+  ctx.fillStyle='rgba(140,215,255,0.55)'; ctx.strokeStyle='rgba(80,160,210,0.8)'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.roundRect(-10,-25,20,38,4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='rgba(120,195,240,0.65)';
+  ctx.beginPath(); ctx.roundRect(-5,-34,10,12,3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#FF3333'; ctx.beginPath(); ctx.roundRect(-5,-38,10,7,2); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.fillRect(-8,-14,5,18);
+  ctx.restore();
+  b.hx=b.x; b.hy=b.y; b.hr=5;
+}
+
+function drawBearPaw(bear) {
+  const prog=bear.timer/bear.duration;
+  const ext=prog<0.5?prog/0.5:1-(prog-0.5)/0.5;
+  const tipY=WATER_TOP+ext*(bear.reach-WATER_TOP);
+  bear.hx=bear.x; bear.hy=tipY; bear.hr=ext>0.12?16:-1;
+  ctx.save(); ctx.translate(bear.x,tipY);
+  const armH=220;
+  ctx.fillStyle='#6A4A08'; ctx.beginPath(); ctx.roundRect(-20,-armH,40,armH,12); ctx.fill();
+  ctx.fillStyle='#8A6018'; ctx.beginPath(); ctx.roundRect(-15,-armH+5,30,armH-10,9); ctx.fill();
+  ctx.fillStyle='#2e1a04'; ctx.beginPath(); ctx.ellipse(0,5,26,21,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1e1004'; ctx.beginPath(); ctx.ellipse(0,7,19,15,0,0,Math.PI*2); ctx.fill();
+  [[-15,19],[-5,23],[5,23],[15,19]].forEach(([cx,cy])=>{
+    ctx.fillStyle='#F0E0B0'; ctx.beginPath(); ctx.ellipse(cx,cy,5,13,cx<0?-0.15:0.15,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#D8C890'; ctx.beginPath(); ctx.ellipse(cx,cy,3.5,9,cx<0?-0.15:0.15,0,Math.PI*2); ctx.fill();
+  });
+  [[-9,3],[0,7],[9,3]].forEach(([bx,by])=>{
+    ctx.fillStyle='#5A3010'; ctx.beginPath(); ctx.arc(bx,by,5,0,Math.PI*2); ctx.fill();
+  });
+  if (ext>0.06) {
+    const rr=20+ext*14;
+    ctx.strokeStyle=`rgba(140,210,255,${0.65-ext*0.25})`; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(0,-9,rr,rr*0.32,0,0,Math.PI*2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawNet(n) {
+  const gY=n.gapY, gH=n.gapH;
+  ctx.strokeStyle='rgba(210,185,100,0.75)'; ctx.lineWidth=2;
+  for (let nx=n.x+4;nx<n.x+22;nx+=9) {
+    ctx.beginPath(); ctx.moveTo(nx,WATER_TOP); ctx.lineTo(nx,gY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(nx,gY+gH); ctx.lineTo(nx,WATER_BOT); ctx.stroke();
+  }
+  for (let ny=WATER_TOP+18;ny<WATER_BOT;ny+=20) {
+    if (ny>gY-8&&ny<gY+gH+8) continue;
+    ctx.beginPath(); ctx.moveTo(n.x,ny); ctx.lineTo(n.x+22,ny); ctx.stroke();
+  }
+  ctx.fillStyle='rgba(255,180,60,0.8)';
+  ctx.beginPath(); ctx.ellipse(n.x+11,WATER_TOP+4,12,5,0,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#CC8830'; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle='rgba(80,255,80,0.7)'; ctx.font='bold 11px Arial'; ctx.textAlign='center';
+  ctx.fillText('→',n.x+28,gY+gH/2+4);
+  n.hT={cx:n.x+11,cy:(WATER_TOP+gY)/2,hw:13,hh:(gY-WATER_TOP)/2};
+  n.hB={cx:n.x+11,cy:(gY+gH+WATER_BOT)/2,hw:13,hh:(WATER_BOT-gY-gH)/2};
+}
+
+function drawRock(r) {
+  ctx.save(); ctx.translate(r.x,r.y);
+  ctx.fillStyle=`hsl(${r.hue},15%,35%)`;
+  ctx.beginPath(); ctx.ellipse(0,0,r.w,r.h,r.tilt,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=`hsl(${r.hue},10%,48%)`;
+  ctx.beginPath(); ctx.ellipse(-r.w*0.2,-r.h*0.25,r.w*0.55,r.h*0.38,r.tilt+0.3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  r.hx=r.x; r.hy=r.y; r.hr=Math.max(r.w,r.h)*0.5;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  COLLECTIBLES
+// ─────────────────────────────────────────────────────────────
+function drawWorm(w) {
+  const wave=Math.sin(t*0.14+w.wave)*9;
+  ctx.strokeStyle=w.col; ctx.lineWidth=5; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(w.x,w.y);
+  ctx.quadraticCurveTo(w.x+wave,w.y+8,w.x-wave*0.5,w.y+17);
+  ctx.quadraticCurveTo(w.x-wave,w.y+25,w.x+wave*0.5,w.y+33);
+  ctx.stroke();
+  ctx.fillStyle=w.col; ctx.beginPath(); ctx.arc(w.x,w.y,4,0,Math.PI*2); ctx.fill();
+  w.hx=w.x; w.hy=w.y+17; w.hr=10;
+}
+
+function drawFrog(f) {
+  const bob=Math.sin(t*0.09+f.x*0.008)*4;
+  ctx.save(); ctx.translate(f.x,f.y+bob);
+  ctx.shadowColor='#00FF88'; ctx.shadowBlur=18;
+  ctx.fillStyle='#00EE66'; ctx.beginPath(); ctx.ellipse(0,0,14,10,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#00FF77'; ctx.beginPath(); ctx.ellipse(14,-3,11,9,0.25,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+  [9,19].forEach(ex=>{
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(ex,-9,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#111'; ctx.beginPath(); ctx.arc(ex,-9,2.5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(ex+1,-10,1,0,Math.PI*2); ctx.fill();
+  });
+  ctx.strokeStyle='#00BB44'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-10,4); ctx.lineTo(-20,15); ctx.lineTo(-14,15); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-6,6); ctx.lineTo(-17,20); ctx.lineTo(-10,20); ctx.stroke();
+  ctx.strokeStyle='rgba(0,255,100,0.35)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(0,0,22,0,Math.PI*2); ctx.stroke();
+  ctx.restore();
+  f.hx=f.x; f.hy=f.y; f.hr=13;
+}
+
+function drawHeart(h) {
+  ctx.save(); ctx.translate(h.x,h.y); ctx.scale(1.05,1.05);
+  ctx.fillStyle='#FF2255';
+  ctx.beginPath(); ctx.moveTo(0,4);
+  ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
+  ctx.bezierCurveTo(-15,13,0,19,0,19);
+  ctx.bezierCurveTo(0,19,15,13,15,5);
+  ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.fill();
+  ctx.fillStyle='rgba(255,180,200,0.6)';
+  ctx.beginPath(); ctx.ellipse(-5,2,3,2,-0.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  h.hx=h.x; h.hy=h.y+9; h.hr=11;
+}
+
+const QC = { green:'#00CC44', yellow:'#FFCC00', red:'#FF3333' };
+const QG = { green:'rgba(0,220,80,0.2)', yellow:'rgba(255,200,0,0.2)', red:'rgba(255,60,60,0.2)' };
+
+function drawQMark(q) {
+  const bob=Math.sin(t*0.07+q.x*0.009)*5;
+  ctx.save(); ctx.translate(q.x,q.y+bob);
+  ctx.beginPath(); ctx.arc(0,0,24,0,Math.PI*2); ctx.fillStyle=QG[q.diff]; ctx.fill();
+  ctx.beginPath(); ctx.arc(0,0,17,0,Math.PI*2); ctx.fillStyle=QC[q.diff]; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.7)'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='white'; ctx.font='bold 18px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('?',0,1);
+  ctx.restore();
+  q.hx=q.x; q.hy=q.y; q.hr=22;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  HUD
+// ─────────────────────────────────────────────────────────────
+function drawHUD() {
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(10,10,322,36,8); ctx.fill();
+  for (let i=0;i<10;i++) {
+    const hx=16+i*30, hy=16;
+    ctx.save(); ctx.translate(hx,hy); ctx.scale(0.88,0.88);
+    if (i<health) {
+      ctx.fillStyle='#FF2255';
+      ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
+      ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
+      ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.fill();
+    } else {
+      ctx.strokeStyle='#441122'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
+      ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
+      ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(10,54,300,28,8); ctx.fill();
+  ctx.fillStyle='#88FFCC'; ctx.font='bold 11px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('STRENGTH',16,68);
+  const bx=96,bw=206,by=58,bh=18;
+  ctx.fillStyle='#1a3322'; ctx.beginPath(); ctx.roundRect(bx,by,bw,bh,5); ctx.fill();
+  const sc=strength/100;
+  if (sc>0) {
+    const sf=sc<0.4?'#FF6644':sc<0.7?'#FFD700':'#44DD88';
+    ctx.fillStyle=sf; ctx.beginPath(); ctx.roundRect(bx,by,bw*sc,bh,5); ctx.fill();
+  }
+  ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.roundRect(bx,by,bw,bh,5); ctx.stroke();
+  const thr=jumpThreshold();
+  const thX=bx+bw*(thr/100);
+  ctx.strokeStyle='#FF8800'; ctx.lineWidth=2.5;
+  ctx.beginPath(); ctx.moveTo(thX,by-3); ctx.lineTo(thX,by+bh+3); ctx.stroke();
+  ctx.fillStyle='#FF8800'; ctx.font='9px Arial'; ctx.textAlign='center';
+  ctx.fillText('▲',thX,by+bh+10);
+
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(W-185,10,175,48,8); ctx.fill();
+  ctx.fillStyle='#FFD700'; ctx.font='bold 11px Arial'; ctx.textAlign='right'; ctx.textBaseline='top';
+  ctx.fillText('SCORE',W-12,14);
+  ctx.fillStyle='white'; ctx.font='bold 19px Arial';
+  ctx.fillText(score.toLocaleString(),W-12,26);
+  ctx.fillStyle='#88DDFF'; ctx.font='bold 11px Arial';
+  ctx.fillText('LEVEL '+level,W-12,47);
+
+  const prog=Math.min(scrollDist/levelLength,1);
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.roundRect(10,H-16,W-20,9,5); ctx.fill();
+  if (prog>0) {
+    ctx.fillStyle=prog>0.9?'#FFD700':'#44BBFF';
+    ctx.beginPath(); ctx.roundRect(10,H-16,(W-20)*prog,9,5); ctx.fill();
+  }
+
+  if (prog>=1) {
+    // At end of level — show persistent strength-needed banner
+    const pulse=0.7+Math.sin(t*0.14)*0.3;
+    ctx.fillStyle=`rgba(180,70,0,${pulse*0.92})`;
+    ctx.fillRect(0,H-44,W,44);
+    ctx.fillStyle='white'; ctx.font='bold 14px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(`Strength needed to jump: ${Math.floor(strength)}% / ${thr}%  —  answer questions to build it!`,W/2,H-22);
+  } else if (prog>0.86) {
+    const pulse=0.6+Math.sin(t*0.12)*0.4;
+    ctx.fillStyle=`rgba(255,220,80,${pulse*0.85})`;
+    ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('▶▶  JUMP AHEAD — fill strength bar!',W/2,H-32);
+  }
+
+  // Boost indicator
+  const boostActive=boostHeld&&strength>0;
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(10,88,152,26,7); ctx.fill();
+  if (boostActive) {
+    const bp=0.75+Math.sin(t*0.2)*0.25;
+    ctx.fillStyle=`rgba(255,180,0,${bp})`;
+    ctx.font='bold 12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText('⚡ BOOST ACTIVE  [W]',16,101);
+  } else if (strength<=0&&boostHeld) {
+    ctx.fillStyle='rgba(255,80,80,0.9)';
+    ctx.font='bold 12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText('⚡ NO STRENGTH TO BOOST',16,101);
+  } else {
+    ctx.fillStyle='rgba(150,150,150,0.6)';
+    ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText('[W] Hold to boost forward',16,101);
+  }
+
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SPAWN SYSTEM
+// ─────────────────────────────────────────────────────────────
+function rn(mn,mx) { return mn+Math.random()*(mx-mn); }
+function ri(mn,mx) { return Math.floor(rn(mn,mx+1)); }
+
+function spawnObjects() {
+  const sm=1+(level-1)*0.09;
+
+  ST.hook--;
+  if (ST.hook<=0) {
+    hooks.push({ x:W+20, len:rn(38,WATER_BOT-WATER_TOP-70) });
+    ST.hook=ri(260,420)/sm;
+  }
+  ST.bottle--;
+  if (ST.bottle<=0) {
+    bottles.push({ x:W+20, y:rn(WATER_TOP+50,WATER_BOT-65) });
+    ST.bottle=ri(200,340)/sm;
+  }
+  ST.bear--;
+  if (ST.bear<=0) {
+    bears.push({ x:rn(100,W-100), reach:rn(140,WATER_BOT-90), timer:0, duration:ri(80,130) });
+    ST.bear=ri(680,1100)/sm;
+  }
+  ST.net--;
+  if (ST.net<=0&&level>=2) {
+    const gapY=rn(WATER_TOP+65,WATER_BOT-130);
+    nets.push({ x:W+20, gapY, gapH:82+rn(0,42) });
+    ST.net=ri(1400,2100)/sm;
+  }
+  ST.rock--;
+  if (ST.rock<=0) {
+    const w2=ri(18,36),h2=ri(10,18);
+    rocks.push({ x:W+30, y:WATER_BOT-h2-ri(0,20), w:w2, h:h2, tilt:rn(-0.4,0.4), hue:ri(20,50) });
+    ST.rock=ri(280,460)/sm;
+  }
+  ST.worm--;
+  if (ST.worm<=0) {
+    const rnd=Math.random();
+    let col='#8B4513',pts=50;
+    if (rnd>0.9) { col='#FFD700';pts=250; }
+    else if (rnd>0.55) { col='#CC2200';pts=100; }
+    worms.push({ x:W+20, y:rn(WATER_TOP+55,WATER_BOT-70), col, pts, wave:Math.random()*6.28 });
+    ST.worm=ri(52,98)/sm;
+    if (Math.random()<0.05) frogs.push({ x:W+80+Math.random()*80, y:rn(WATER_TOP+60,WATER_BOT-80) });
+  }
+  ST.heart--;
+  if (ST.heart<=0) {
+    hearts.push({ x:W+60, y:rn(WATER_TOP+30,WATER_BOT-60), spd:rn(0.4,0.8), xSpd:scrollSpeed() });
+    ST.heart=ri(290,480);
+  }
+  // Q-marks: max 2 on screen at a time
+  const qTarget=2;
+  while (qmarks.length<qTarget) {
+    const rd=Math.random();
+    const diff=rd<0.45?'green':rd<0.75?'yellow':'red';
+    qmarks.push({ x:W+60+Math.random()*150, y:rn(WATER_TOP+55,WATER_BOT-80), diff });
+  }
+  // Caves: level 3+
+  ST.cave--;
+  if (ST.cave<=0&&level>=3) {
+    const centerY=rn(WATER_TOP+110,WATER_BOT-130);
+    caves.push({ x:W+20, centerY, len:ri(520,840),
+      waveAmp:ri(18,42), waveFreq:rn(0.016,0.028), wavePhase:Math.random()*6.28,
+      gapH:156 });
+    ST.cave=ri(1200,1800)/sm;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CAVE DRAWING
+// ─────────────────────────────────────────────────────────────
+function caveCenterY(c,ox) { return c.centerY+c.waveAmp*Math.sin(c.waveFreq*ox+c.wavePhase); }
+
+function drawCave(c) {
+  const steps=Math.ceil(c.len/5)+1, dx=c.len/steps;
+  // ceiling
+  ctx.beginPath();
+  ctx.moveTo(c.x,WATER_TOP);
+  for (let i=0;i<=steps;i++) { const ox=i*dx; ctx.lineTo(c.x+ox,caveCenterY(c,ox)-c.gapH/2); }
+  ctx.lineTo(c.x+c.len,WATER_TOP); ctx.closePath();
+  const cg=ctx.createLinearGradient(0,WATER_TOP,0,WATER_TOP+60);
+  cg.addColorStop(0,'#2a1e0a'); cg.addColorStop(1,'#4a3318');
+  ctx.fillStyle=cg; ctx.fill();
+  // floor
+  ctx.beginPath();
+  ctx.moveTo(c.x,WATER_BOT);
+  for (let i=0;i<=steps;i++) { const ox=i*dx; ctx.lineTo(c.x+ox,caveCenterY(c,ox)+c.gapH/2); }
+  ctx.lineTo(c.x+c.len,WATER_BOT); ctx.closePath();
+  const fg=ctx.createLinearGradient(0,WATER_BOT-60,0,WATER_BOT);
+  fg.addColorStop(0,'#4a3318'); fg.addColorStop(1,'#2a1e0a');
+  ctx.fillStyle=fg; ctx.fill();
+  // highlight edges
+  ctx.strokeStyle='#6a4a28'; ctx.lineWidth=2;
+  ctx.beginPath();
+  for (let i=0;i<=steps;i++) { const ox=i*dx; const y=caveCenterY(c,ox)-c.gapH/2; i===0?ctx.moveTo(c.x+ox,y):ctx.lineTo(c.x+ox,y); }
+  ctx.stroke();
+  ctx.beginPath();
+  for (let i=0;i<=steps;i++) { const ox=i*dx; const y=caveCenterY(c,ox)+c.gapH/2; i===0?ctx.moveTo(c.x+ox,y):ctx.lineTo(c.x+ox,y); }
+  ctx.stroke();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  COLLISION
+// ─────────────────────────────────────────────────────────────
+function cc(ax,ay,ar,bx,by,br) {
+  const dx=ax-bx,dy=ay-by;
+  return dx*dx+dy*dy<(ar+br)*(ar+br);
+}
+
+function checkCollisions() {
+  const px=player.x,py=player.y;
+  if (invincible<=0) {
+    for (const h of hooks) {
+      if (h.hr&&cc(px,py,COLL_R,h.hx,h.hy,h.hr)) { takeDamage(); return; }
+    }
+    for (const b of bottles) {
+      if (b.hr&&cc(px,py,COLL_R,b.hx,b.hy,b.hr)) { takeDamage(); return; }
+    }
+    for (const bear of bears) {
+      if (bear.hr>0&&cc(px,py,COLL_R,bear.hx,bear.hy,bear.hr)) { takeDamage(); return; }
+    }
+    for (const r2 of rocks) {
+      if (r2.hr&&cc(px,py,COLL_R,r2.hx,r2.hy,r2.hr)) { takeDamage(); return; }
+    }
+    for (const n of nets) {
+      if (n.hT) {
+        const nt=n.hT;
+        if (Math.abs(px-nt.cx)<nt.hw+COLL_R&&Math.abs(py-nt.cy)<nt.hh+COLL_R) { takeDamage(); return; }
+      }
+      if (n.hB) {
+        const nb=n.hB;
+        if (Math.abs(px-nb.cx)<nb.hw+COLL_R&&Math.abs(py-nb.cy)<nb.hh+COLL_R) { takeDamage(); return; }
+      }
+    }
+    for (const c of caves) {
+      if (px>=c.x&&px<=c.x+c.len) {
+        const cenY=caveCenterY(c,px-c.x);
+        if (py-COLL_R<cenY-c.gapH/2||py+COLL_R>cenY+c.gapH/2) { takeDamage(); return; }
+      }
+    }
+  } else invincible--;
+
+  for (let i=worms.length-1;i>=0;i--) {
+    const w=worms[i];
+    if (cc(px,py,18,w.hx||w.x,w.hy||w.y+17,16)) {
+      score+=w.pts; sfxCollect(w.pts);
+      strength=Math.min(100,strength+(w.pts===50?8:w.pts===100?14:22));
+      worms.splice(i,1);
+    }
+  }
+  for (let i=frogs.length-1;i>=0;i--) {
+    const f=frogs[i];
+    if (cc(px,py,18,f.hx||f.x,f.hy||f.y,20)) {
+      score+=2500; sfxFrog(); frogs.splice(i,1);
+    }
+  }
+  for (let i=hearts.length-1;i>=0;i--) {
+    const h=hearts[i];
+    if (cc(px,py,18,h.hx||h.x,h.hy||h.y+9,15)) {
+      health=Math.min(10,health+1); sfxHeart(); hearts.splice(i,1);
+    }
+  }
+  for (let i=qmarks.length-1;i>=0;i--) {
+    const q=qmarks[i];
+    if (cc(px,py,18,q.hx||q.x,q.hy||q.y,22)) {
+      openQuestion(q.diff); qmarks.splice(i,1); break;
+    }
+  }
+}
+
+function takeDamage() {
+  if (invincible>0) return;
+  health--; sfxHit();
+  stunTimer=35; invincible=75;
+  if (health<=0) { health=0; state='GAMEOVER'; if(score>highScore) highScore=score; }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  QUESTIONS
+// ─────────────────────────────────────────────────────────────
+function optPositions(n) {
+  if (n===2) return [[100,330,330,66],[464,330,330,66]];
+  if (n===3) return [[100,268,330,66],[464,268,330,66],[282,352,330,66]];
+  return [[100,268,330,66],[464,268,330,66],[100,352,330,66],[464,352,330,66]];
+}
+function openQuestion(diff) {
+  const q=pickQuestion(diff);
+  const count=diff==='red'?2:diff==='yellow'?3:4;
+  // pick `count` options: always include correct answer + random wrong ones
+  const wrongs=[0,1,2,3].filter(i=>i!==q.a);
+  for (let i=wrongs.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[wrongs[i],wrongs[j]]=[wrongs[j],wrongs[i]];}
+  const chosen=[...wrongs.slice(0,count-1),q.a];
+  for (let i=chosen.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[chosen[i],chosen[j]]=[chosen[j],chosen[i]];}
+  curQ={ ...q, o:chosen.map(i=>q.o[i]), a:chosen.indexOf(q.a), _diff:diff, _sel:-1 };
+  qResult=null; state='QUESTION';
+}
+function answerQ(idx) {
+  if (qResult!==null) return;
+  curQ._sel=idx;
+  if (idx===curQ.a) {
+    qResult='correct'; sfxRight();
+    strength=Math.min(100,strength+20); score+=250;
+  } else {
+    qResult='wrong'; sfxWrong(); takeDamage();
+  }
+  qTimer=100;
+}
+function triggerStrengthQuestion() {
+  const rd=Math.random();
+  openQuestion(rd<0.45?'green':rd<0.75?'yellow':'red');
+}
+function dismissQuestion() {
+  if (awaitingStrength) {
+    if (strength>=jumpThreshold()) { awaitingStrength=false; startJump(); return; }
+    triggerStrengthQuestion(); return;
+  }
+  state='PLAYING'; curQ=null; qResult=null;
+}
+
+function drawQuestion() {
+  ctx.fillStyle='rgba(0,8,26,0.78)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#070e24';
+  ctx.beginPath(); ctx.roundRect(72,72,756,424,18); ctx.fill();
+  const dc=QC[curQ._diff];
+  ctx.strokeStyle=dc; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.roundRect(72,72,756,424,18); ctx.stroke();
+  ctx.fillStyle=dc;
+  ctx.beginPath(); ctx.roundRect(W/2-56,62,112,24,8); ctx.fill();
+  ctx.fillStyle='white'; ctx.font='bold 12px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(curQ._diff.toUpperCase()+' QUESTION',W/2,74);
+  ctx.fillStyle='white'; ctx.font='bold 18px Arial'; ctx.textAlign='center'; ctx.textBaseline='top';
+  wrapText(curQ.q,W/2,106,680,27);
+  const labels=['A','B','C','D'];
+  const pos=optPositions(curQ.o.length);
+  curQ.o.forEach((opt,i)=>{
+    const [ox,oy,ow,oh]=pos[i];
+    let bg='#101e40';
+    if (qResult!==null) {
+      if (i===curQ.a) bg='#003a00';
+      else if (i===curQ._sel&&i!==curQ.a) bg='#3a0000';
+    }
+    ctx.fillStyle=bg; ctx.beginPath(); ctx.roundRect(ox,oy,ow,oh,10); ctx.fill();
+    let bc='#2a3a66';
+    if (qResult!==null&&i===curQ.a) bc='#44FF44';
+    if (qResult!==null&&i===curQ._sel&&i!==curQ.a) bc='#FF4444';
+    ctx.strokeStyle=bc; ctx.lineWidth=qResult!==null&&(i===curQ.a||i===curQ._sel)?2.5:1.5; ctx.stroke();
+    ctx.fillStyle=dc; ctx.font='bold 16px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText(labels[i]+'.', ox+14, oy+oh/2);
+    ctx.fillStyle='white'; ctx.font='14px Arial';
+    ctx.fillText(opt, ox+38, oy+oh/2);
+  });
+  const keyHint='A / B'+(curQ.o.length>2?' / C':'')+(curQ.o.length>3?' / D':'');
+  if (qResult==='correct') {
+    ctx.fillStyle='#44FF88'; ctx.font='bold 21px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('✓  Correct!  +20 Strength  +250 pts',W/2,436);
+    ctx.fillStyle='rgba(100,255,160,0.7)'; ctx.font='13px Arial';
+    ctx.fillText('Click or any key to continue',W/2,461);
+  } else if (qResult==='wrong') {
+    ctx.fillStyle='#FF5555'; ctx.font='bold 21px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('✗  Wrong answer  —1 Health',W/2,436);
+    ctx.fillStyle='rgba(255,150,150,0.7)'; ctx.font='13px Arial';
+    ctx.fillText('Click or any key to continue',W/2,461);
+  } else {
+    ctx.fillStyle='#88CCFF'; ctx.font='14px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('Click an answer  or  press  '+keyHint,W/2,450);
+  }
+  if (awaitingStrength) {
+    const thr=jumpThreshold();
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(72,480,756,28);
+    const pct=Math.min(strength/thr,1);
+    ctx.fillStyle='#FF7700'; ctx.fillRect(72,480,756*pct,28);
+    ctx.fillStyle='white'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(`Strength to jump: ${Math.floor(strength)}% / ${thr}%  — correct answers fill the bar`,W/2,494);
+  }
+}
+
+function wrapText(text,cx,y,maxW,lineH) {
+  const words=text.split(' ');
+  let line='';
+  for (const w of words) {
+    const test=line+w+' ';
+    if (ctx.measureText(test).width>maxW&&line!=='') {
+      ctx.fillText(line.trim(),cx,y); line=w+' '; y+=lineH;
+    } else line=test;
+  }
+  ctx.fillText(line.trim(),cx,y);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  JUMP SCENE
+// ─────────────────────────────────────────────────────────────
+function getJumpSpeed() { return powerVal*powerVal*22; }
+function getJumpAngle() { return -Math.PI*(0.12+angleVal*0.38); }
+
+function drawJumpScene() {
+  const L=jumpLayout();
+  const P=getJumpPonds(L);
+  ctx.fillStyle='#5870E8'; ctx.fillRect(0,0,W,H);
+  [[70,48,110,24],[290,30,80,18],[540,54,100,22],[740,38,75,18]].forEach(([cx,cy,cw,ch])=>{
+    ctx.fillStyle='#E8EEFF';
+    ctx.fillRect(cx,cy,cw,ch); ctx.fillRect(cx-12,cy+7,cw+24,ch);
+    ctx.fillRect(cx+7,cy-7,cw-14,ch+4);
+  });
+  // Left pond (both layouts)
+  ctx.fillStyle='#1040C0'; ctx.fillRect(0,L.LP_SRF,L.LP_R,L.LP_BANK-L.LP_SRF);
+  ctx.fillStyle='#40A020'; ctx.fillRect(0,L.LP_SRF-4,L.LP_R,4);
+  ctx.fillStyle='#704010'; ctx.fillRect(0,L.LP_BANK,L.LP_R,H-L.LP_BANK);
+  if (L.two) {
+    // Staircase: rising slope LP→MP
+    ctx.fillStyle='#704010';
+    ctx.beginPath(); ctx.moveTo(L.LP_R,L.LP_BANK); ctx.lineTo(L.MP_L,L.MP_SRF);
+    ctx.lineTo(L.MP_L,H); ctx.lineTo(L.LP_R,H); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#40A020'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(L.LP_R,L.LP_BANK); ctx.lineTo(L.MP_L,L.MP_SRF); ctx.stroke();
+    // Middle pond
+    ctx.fillStyle='#1040C0'; ctx.fillRect(L.MP_L,L.MP_SRF,L.MP_R-L.MP_L,L.MP_BANK-L.MP_SRF);
+    ctx.fillStyle='#40A020'; ctx.fillRect(L.MP_L,L.MP_SRF-4,L.MP_R-L.MP_L,4);
+    ctx.fillStyle='#704010'; ctx.fillRect(L.MP_L,L.MP_BANK,L.MP_R-L.MP_L,H-L.MP_BANK);
+    ctx.fillStyle='#4A2808'; ctx.fillRect(L.MP_L-10,L.MP_SRF,10,L.MP_BANK-L.MP_SRF);
+    ctx.fillStyle='#301c04'; ctx.fillRect(L.MP_L-12,L.MP_SRF-4,12,6);
+    // Rising slope MP→RP
+    ctx.fillStyle='#704010';
+    ctx.beginPath(); ctx.moveTo(L.MP_R,L.MP_SRF); ctx.lineTo(L.RP_L,L.RP_SRF);
+    ctx.lineTo(L.RP_L,H); ctx.lineTo(L.MP_R,H); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#40A020'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(L.MP_R,L.MP_SRF); ctx.lineTo(L.RP_L,L.RP_SRF); ctx.stroke();
+  } else {
+    // Flat connecting ground (single jump)
+    ctx.fillStyle='#704010';
+    ctx.beginPath(); ctx.moveTo(L.LP_R,L.LP_BANK); ctx.lineTo(L.RP_L,L.RP_BANK);
+    ctx.lineTo(L.RP_L,H); ctx.lineTo(L.LP_R,H); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#40A020'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(L.LP_R,L.LP_BANK); ctx.lineTo(L.RP_L,L.RP_BANK); ctx.stroke();
+  }
+  // Right pond (both layouts)
+  ctx.fillStyle='#1040C0'; ctx.fillRect(L.RP_L,L.RP_SRF,L.RP_R-L.RP_L,L.RP_BANK-L.RP_SRF);
+  ctx.fillStyle='#40A020'; ctx.fillRect(L.RP_L,L.RP_SRF-4,L.RP_R-L.RP_L,4);
+  ctx.fillStyle='#704010'; ctx.fillRect(L.RP_L,L.RP_BANK,L.RP_R-L.RP_L,H-L.RP_BANK);
+  ctx.fillStyle='#4A2808'; ctx.fillRect(L.RP_L-10,L.RP_SRF,10,L.RP_BANK-L.RP_SRF);
+  ctx.fillStyle='#301c04'; ctx.fillRect(L.RP_L-12,L.RP_SRF-4,12,6);
+  // Shimmer in all ponds
+  const ponds=L.two?[[0,L.LP_R,L.LP_SRF],[L.MP_L,L.MP_R,L.MP_SRF],[L.RP_L,L.RP_R,L.RP_SRF]]:[[0,L.LP_R,L.LP_SRF],[L.RP_L,L.RP_R,L.RP_SRF]];
+  ponds.forEach(([x0,x1,srf])=>{
+    ctx.fillStyle='#2060E0';
+    for (let wx=x0+8;wx<x1-16;wx+=30) ctx.fillRect(wx,srf+6,14,4);
+    ctx.fillStyle='rgba(64,128,255,0.65)';
+    const sh=(t*0.4|0)%30;
+    for (let wx=x0+4;wx<x1-20;wx+=38) ctx.fillRect(wx+sh,srf+2,10,3);
+  });
+  // Pixel bubbles in ponds
+  for (const b of bubbles) {
+    let inP=b.x<L.LP_R&&b.y>L.LP_SRF&&b.y<L.LP_BANK;
+    if (L.two) inP=inP||(b.x>L.MP_L&&b.x<L.MP_R&&b.y>L.MP_SRF&&b.y<L.MP_BANK);
+    inP=inP||(b.x>L.RP_L&&b.y>L.RP_SRF&&b.y<L.RP_BANK);
+    if (inP) { ctx.fillStyle='rgba(160,210,255,0.5)'; ctx.fillRect(b.x-2,b.y-2,4,4); }
+  }
+  // Target zone (active, with narrowing landing window)
+  const TL=P.tgtL+8, TW=L.landW, TSrf=P.tgtSRF, TBank=P.tgtBANK;
+  const pulse=Math.floor(t*0.06)%2;
+  if (jp<3||jumpResult==='win') {
+    ctx.fillStyle=pulse?'rgba(255,255,80,0.22)':'rgba(255,255,80,0.07)';
+    ctx.fillRect(TL,TSrf+2,TW,TBank-TSrf-4);
+    ctx.strokeStyle='#FFFF44'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+    ctx.strokeRect(TL,TSrf+2,TW,TBank-TSrf-4);
+    ctx.setLineDash([]);
+    ctx.fillStyle='#FFFF88'; ctx.font='bold 13px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='top';
+    ctx.fillText('LAND HERE',TL+TW/2,TSrf+9);
+  }
+  // Wind indicator
+  if (level>=3&&jp<2) drawWindIndicator();
+  // 8-bit salmon
+  if (jp<=1) draw8bitSalmon(jX,jY,0);
+  else if (jp===2) { draw8bitSalmon(jX,jY,Math.atan2(jVY,jVX)); }
+  else if (jp===3&&jumpResult==='win') draw8bitSalmon(jX,jY,0);
+
+  // Power bar
+  const pbX=22,pbY=110,pbW=36,pbH=250;
+  ctx.fillStyle='#000820'; ctx.fillRect(pbX-5,pbY-30,pbW+10,pbH+60);
+  ctx.fillStyle='#3840A0'; ctx.fillRect(pbX-3,pbY-28,pbW+6,pbH+56);
+  ctx.fillStyle='#000820'; ctx.fillRect(pbX,pbY,pbW,pbH);
+  const fh=pbH*powerVal;
+  const pc=powerVal>.82?'#FF3030':powerVal>.52?'#FFCC00':'#30FF60';
+  if (fh>0) { ctx.fillStyle=pc; ctx.fillRect(pbX,pbY+pbH-fh,pbW,fh); }
+  for (let i=1;i<5;i++) { ctx.fillStyle='#1a2a58'; ctx.fillRect(pbX,pbY+pbH*(1-i/5)-1,pbW,2); }
+  ctx.fillStyle='#AAAAFF'; ctx.font='bold 11px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillText('POWER',pbX+pbW/2,pbY-3);
+  ctx.fillStyle=pc; ctx.font='bold 13px "Courier New"'; ctx.textBaseline='top';
+  ctx.fillText(Math.round(powerVal*100)+'%',pbX+pbW/2,pbY+pbH+5);
+  if (jp>=1) {
+    ctx.strokeStyle='#FFCC00'; ctx.lineWidth=3; ctx.strokeRect(pbX-1,pbY-1,pbW+2,pbH+2);
+    ctx.fillStyle='#FFCC00'; ctx.font='bold 9px "Courier New"'; ctx.textBaseline='top';
+    ctx.fillText('LOCKED',pbX+pbW/2,pbY+pbH+21);
+  } else {
+    ctx.fillStyle='#7070AA'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
+    ctx.fillText('[SPACE]',pbX+pbW/2,pbY+pbH+21);
+  }
+
+  // Angle dial
+  const acX=108,acY=432,acR=60;
+  ctx.fillStyle='#000820'; ctx.beginPath(); ctx.arc(acX,acY,acR+14,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#3840A0'; ctx.beginPath(); ctx.arc(acX,acY,acR+11,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#000820'; ctx.beginPath(); ctx.arc(acX,acY,acR,-Math.PI,0,false); ctx.lineTo(acX,acY); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#181830'; ctx.beginPath(); ctx.arc(acX,acY,acR,0,Math.PI); ctx.lineTo(acX,acY); ctx.closePath(); ctx.fill();
+  [{s:Math.PI,e:Math.PI*1.18,c:'#441800'},{s:Math.PI*1.18,e:Math.PI*1.52,c:'#003300'},{s:Math.PI*1.52,e:Math.PI*1.62,c:'#441800'},{s:Math.PI*1.62,e:Math.PI*2,c:'#440000'}].forEach(z=>{
+    ctx.strokeStyle=z.c; ctx.lineWidth=20;
+    ctx.beginPath(); ctx.arc(acX,acY,acR-6,z.s,z.e); ctx.stroke();
+  });
+  ctx.strokeStyle='#00BB00'; ctx.lineWidth=12;
+  ctx.beginPath(); ctx.arc(acX,acY,acR-6,Math.PI*1.22,Math.PI*1.5); ctx.stroke();
+  const needleAng=getJumpAngle();
+  const nx2=acX+Math.cos(needleAng)*acR, ny2=acY+Math.sin(needleAng)*acR;
+  ctx.strokeStyle=jp>=1?'#FFCC00':'#FFFFFF'; ctx.lineWidth=3.5;
+  ctx.beginPath(); ctx.moveTo(acX,acY); ctx.lineTo(nx2,ny2); ctx.stroke();
+  ctx.fillStyle=jp>=1?'#FFCC00':'#FFFFFF'; ctx.beginPath(); ctx.arc(nx2,ny2,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#8888FF'; ctx.beginPath(); ctx.arc(acX,acY,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#AAAAFF'; ctx.font='bold 11px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillText('ANGLE',acX,acY-acR-16);
+  if (jp===1) {
+    ctx.fillStyle='#FFCC00'; ctx.font='bold 9px "Courier New"'; ctx.textBaseline='top';
+    ctx.fillText('LOCKED',acX,acY+8);
+  } else if (jp===0) {
+    ctx.fillStyle='#7070AA'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
+    ctx.fillText('[SPACE]',acX,acY+8);
+  }
+
+  // Trajectory preview (accounts for wind)
+  if (jp===1) {
+    const spd=getJumpSpeed(),ang=getJumpAngle();
+    let tx=jX,ty=jY,tvx=Math.cos(ang)*spd,tvy=Math.sin(ang)*spd;
+    for (let i=0;i<110;i++) {
+      tvy+=JUMP_GRAV; tx+=tvx+windForce; ty+=tvy;
+      if (i%4===0&&tx<W+10&&ty<H+10&&tx>0) {
+        const a=Math.max(0.08,1-i/110);
+        ctx.fillStyle=`rgba(255,255,80,${a*0.72})`;
+        ctx.fillRect(tx-3,ty-3,6,6);
+      }
+      if (ty>H+20||tx>W+20) break;
+    }
+  }
+
+  // Phase prompt
+  if (jp<2) {
+    const ph=L.two?`  [Jump ${jumpPhase+1}/2]`:'';
+    const prompts=['Stop the POWER bar!  [SPACE]'+ph,'Set ANGLE, then LAUNCH  [SPACE]  ·  Hold SPACE to steer up'];
+    ctx.fillStyle='rgba(0,6,24,0.9)'; ctx.fillRect(208,13,484,30);
+    ctx.fillStyle='#AACCFF'; ctx.font='bold 12px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(prompts[jp],450,28);
+  }
+
+  // Result overlay
+  if (jp===3) {
+    jumpTimer++;
+    const al=Math.min(jumpTimer/18,1);
+    if (jumpResult==='win') {
+      ctx.fillStyle=`rgba(0,50,0,${al*0.85})`; ctx.fillRect(200,155,500,200);
+      ctx.fillStyle=`rgba(80,255,80,${al})`; ctx.font='bold 42px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('SPLASH!',W/2,230);
+      ctx.fillStyle=`rgba(180,255,180,${al})`; ctx.font='bold 20px "Courier New"';
+      ctx.fillText('+'+(level*500).toLocaleString()+' PTS  ·  LEVEL UP!',W/2,282);
+      ctx.font='12px "Courier New"'; ctx.fillStyle=`rgba(160,255,160,${al})`;
+      ctx.fillText('[SPACE] to continue',W/2,320);
+    } else {
+      ctx.fillStyle=`rgba(60,0,0,${al*0.85})`; ctx.fillRect(200,155,500,200);
+      ctx.fillStyle=`rgba(255,80,80,${al})`; ctx.font='bold 42px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('MISSED!',W/2,230);
+      ctx.fillStyle=`rgba(255,190,190,${al})`; ctx.font='bold 20px "Courier New"';
+      ctx.fillText('-5% SCORE  (attempt '+(jumpAttempts+1)+')',W/2,282);
+      ctx.font='12px "Courier New"'; ctx.fillStyle=`rgba(255,170,170,${al})`;
+      ctx.fillText('[SPACE] to try again',W/2,320);
+    }
+  }
+
+  // Level / score badge
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(W-118,8,108,44);
+  ctx.fillStyle='#FFD700'; ctx.font='bold 12px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('LEVEL '+level,W-64,22);
+  ctx.fillStyle='#88DDFF'; ctx.font='10px "Courier New"';
+  ctx.fillText(L.two?'2 JUMPS':'GAP x'+level,W-64,38);
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(W-118,60,108,30);
+  ctx.fillStyle='white'; ctx.font='bold 11px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(score.toLocaleString(),W-64,75);
+}
+
+function draw8bitSalmon(x,y,ang) {
+  ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+  ctx.fillStyle='#C04010'; ctx.fillRect(-24,-6,9,6); ctx.fillRect(-24,0,9,6);
+  ctx.fillStyle='#E05828'; ctx.fillRect(-15,-12,46,24);
+  ctx.fillStyle='#F0A070'; ctx.fillRect(-8,3,34,9);
+  ctx.fillStyle='#B83810'; ctx.fillRect(-4,-18,22,6); ctx.fillRect(4,12,14,6);
+  ctx.fillStyle='#C04018';
+  [[-2,-9,6,6],[14,-8,6,5],[5,-2,5,5]].forEach(([sx,sy,sw,sh])=>ctx.fillRect(sx,sy,sw,sh));
+  ctx.fillStyle='white'; ctx.fillRect(18,-10,7,7);
+  ctx.fillStyle='#111'; ctx.fillRect(20,-9,4,4);
+  ctx.fillStyle='white'; ctx.fillRect(22,-9,1,1);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  START SCREEN
+// ─────────────────────────────────────────────────────────────
+function drawStartScreen() {
+  ctx.fillStyle='rgba(0,8,24,0.65)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(0,16,50,0.95)';
+  ctx.beginPath(); ctx.roundRect(108,16,684,68,14); ctx.fill();
+  ctx.strokeStyle='#FFD700'; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.fillStyle='#FFD700'; ctx.font='bold 37px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('SALMON RUN',W/2,38);
+  ctx.fillStyle='#88DDFF'; ctx.font='15px Arial';
+  ctx.fillText('A Fish Biology Adventure  —  Spacebar only!',W/2,66);
+
+  const COLS=[{x:192,label:'COLLECT',col:'#44FF88'},{x:450,label:'AVOID',col:'#FF5555'},{x:712,label:'STRENGTH',col:'#FFD700'}];
+  COLS.forEach(c=>{
+    ctx.fillStyle='rgba(0,16,48,0.82)';
+    ctx.beginPath(); ctx.roundRect(c.x-128,95,252,290,10); ctx.fill();
+    ctx.strokeStyle=c.col; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle=c.col; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(c.label,c.x,112);
+  });
+
+  // Collect column
+  const cx=192;
+  [['#8B4513','Brown worm +50'],['#CC2200','Red worm +100'],['#FFD700','Gold worm +250']].forEach(([col,label],i)=>{
+    const wy=148+i*46;
+    const wave=Math.sin(t*.14)*8;
+    ctx.strokeStyle=col; ctx.lineWidth=5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(cx-100,wy); ctx.quadraticCurveTo(cx-100+wave,wy+8,cx-100-wave*.5,wy+17);
+    ctx.quadraticCurveTo(cx-100-wave,wy+25,cx-100+wave*.5,wy+33); ctx.stroke();
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(cx-100,wy,4,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText(label,cx-80,wy+15);
+  });
+  ctx.save(); ctx.translate(cx-94,296);
+  ctx.fillStyle='#00EE66'; ctx.beginPath(); ctx.ellipse(0,0,12,9,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#00FF77'; ctx.beginPath(); ctx.ellipse(11,-2,9,7,.25,0,Math.PI*2); ctx.fill();
+  [8,16].forEach(ex=>{ctx.fillStyle='white';ctx.beginPath();ctx.arc(ex,-8,4,0,Math.PI*2);ctx.fill();ctx.fillStyle='#111';ctx.beginPath();ctx.arc(ex,-8,2,0,Math.PI*2);ctx.fill();});
+  ctx.restore();
+  ctx.fillStyle='#00FF88'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('Neon frog  +2500',cx-74,296);
+  ctx.save(); ctx.translate(cx-98,342); ctx.scale(.9,.9);
+  ctx.fillStyle='#FF2255';
+  ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
+  ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
+  ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle='#FF6699'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('Heart  — restore 1 health',cx-78,350);
+
+  // Avoid column
+  const ax=450;
+  ctx.save(); ctx.translate(ax-100,145);
+  const sw2=Math.sin(t*.04)*4;
+  ctx.strokeStyle='rgba(200,200,200,0.75)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(sw2,48); ctx.stroke();
+  ctx.strokeStyle='#D0D0D0'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(sw2,48); ctx.arc(sw2-6,59,10,-Math.PI*.5,Math.PI*.65); ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillText('Fishing hooks  −1 hp',ax-76,138);
+  ctx.fillStyle='#FF9999'; ctx.font='11px Arial'; ctx.fillText('(swing at all depths)',ax-76,158);
+  ctx.save(); ctx.translate(ax-100,244); ctx.rotate(Math.sin(t*.05)*.25);
+  ctx.fillStyle='rgba(140,215,255,.55)'; ctx.strokeStyle='rgba(80,160,210,.8)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.roundRect(-9,-22,18,34,3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#FF3333'; ctx.beginPath(); ctx.roundRect(-4,-33,8,6,2); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillText('Plastic bottles  −1 hp',ax-76,234);
+  ctx.fillStyle='#FFAAAA'; ctx.font='11px Arial'; ctx.textAlign='center';
+  ctx.fillText('+ bears, rocks & nets!',ax,328);
+
+  // Strength column
+  const stx=712;
+  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('Eat worms → fills strength bar',stx-120,148);
+  ctx.fillText('Answer questions correctly',stx-120,176);
+  ctx.fillText('Bar must reach orange marker',stx-120,204);
+  ctx.fillText('to attempt the JUMP!',stx-120,226);
+  ['green','yellow','red'].forEach((d,i)=>{
+    const qy=270+i*38;
+    ctx.beginPath(); ctx.arc(stx-110,qy,14,0,Math.PI*2); ctx.fillStyle=QG[d]; ctx.fill();
+    ctx.beginPath(); ctx.arc(stx-110,qy,12,0,Math.PI*2); ctx.fillStyle=QC[d]; ctx.fill();
+    ctx.fillStyle='white'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('?',stx-110,qy+1);
+    const lbl=['Easy Q  +20 str','Medium Q  +20 str','Hard Q  +20 str'][i];
+    ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.fillText(lbl,stx-90,qy);
+  });
+  ctx.fillStyle='#FF8888'; ctx.font='12px Arial'; ctx.textAlign='left';
+  ctx.fillText('Wrong answer = −1 health',stx-120,363);
+
+  // Jump instructions bar
+  ctx.fillStyle='rgba(0,16,50,0.9)';
+  ctx.beginPath(); ctx.roundRect(108,396,684,62,10); ctx.fill();
+  ctx.strokeStyle='#88CCFF'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.fillStyle='#88CCFF'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('AT THE WATERFALL:  SPACE = lock POWER  →  SPACE = lock ANGLE  →  LAUNCH!',W/2,416);
+  ctx.fillStyle='#CCDDFF'; ctx.font='12px Arial';
+  ctx.fillText('Hold SPACE mid-air to steer up  |  Fill bar past orange marker first',W/2,441);
+
+  // Start button
+  const bpulse=.87+Math.sin(t*.08)*.13;
+  ctx.save(); ctx.globalAlpha=bpulse;
+  ctx.fillStyle='#1a7040';
+  ctx.beginPath(); ctx.roundRect(W/2-148,470,296,50,12); ctx.fill();
+  ctx.strokeStyle='#88FFCC'; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.fillStyle='white'; ctx.font='bold 18px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('PRESS SPACE TO SWIM!',W/2,495);
+  ctx.restore();
+
+  drawSalmon(70+Math.sin(t*.022)*20,450+Math.sin(t*.038)*10,.8);
+  if (highScore>0) {
+    ctx.fillStyle='rgba(255,215,0,0.85)'; ctx.font='bold 13px Arial'; ctx.textAlign='right'; ctx.textBaseline='bottom';
+    ctx.fillText('Best: '+highScore.toLocaleString(),W-16,H-6);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  GAME OVER
+// ─────────────────────────────────────────────────────────────
+function drawGameOver() {
+  ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(16,0,0,0.94)';
+  ctx.beginPath(); ctx.roundRect(W/2-250,H/2-150,500,300,18); ctx.fill();
+  ctx.strokeStyle='#FF4444'; ctx.lineWidth=3; ctx.stroke();
+  ctx.fillStyle='#FF4444'; ctx.font='bold 38px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('SPAWNING RUN ENDED',W/2,H/2-95);
+  ctx.fillStyle='#FFD700'; ctx.font='bold 24px Arial';
+  ctx.fillText('Score: '+score.toLocaleString(),W/2,H/2-45);
+  if (score>=highScore&&score>0) {
+    ctx.fillStyle='#FFD700'; ctx.font='bold 15px Arial';
+    ctx.fillText('NEW BEST!',W/2,H/2-12);
+  }
+  ctx.fillStyle='#88DDFF'; ctx.font='18px Arial';
+  ctx.fillText('Reached Level '+level,W/2,H/2+22);
+  ctx.fillStyle='#AAAACC'; ctx.font='14px Arial';
+  ctx.fillText('PRESS SPACE to try again',W/2,H/2+68);
+  ctx.save(); ctx.translate(W/2,H/2+120); ctx.rotate(Math.PI);
+  drawSalmon(0,0,.2);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  UPDATE — SWIMMING
+// ─────────────────────────────────────────────────────────────
+function updatePlayer() {
+  player.vy += player.spaceHeld ? -HELI_FORCE : HELI_FORCE;
+  player.vy = Math.max(-MAX_VY, Math.min(MAX_VY, player.vy));
+  player.y += player.vy;
+  player.y = Math.max(WATER_TOP+10, Math.min(WATER_BOT-16, player.y));
+  if (player.y===WATER_TOP+10||player.y===WATER_BOT-16) player.vy=0;
+}
+
+function updateObjects() {
+  const baseSp=scrollSpeed();
+  let sp=baseSp;
+  if (boostHeld && strength>0 && state==='PLAYING') {
+    sp+=BOOST_EXTRA;
+    strength=Math.max(0,strength-BOOST_DRAIN);
+  }
+  scrollDist+=sp;
+  hooks.forEach(h=>h.x-=sp);
+  bottles.forEach(b=>b.x-=sp*0.72);
+  bears.forEach(b=>b.timer++);
+  nets.forEach(n=>n.x-=sp*0.82);
+  rocks.forEach(r=>r.x-=sp);
+  worms.forEach(w=>{w.x-=sp*0.62;w.y+=Math.sin(t*0.09+w.wave)*0.35;});
+  frogs.forEach(f=>f.x-=sp*0.52);
+  hearts.forEach(h=>{h.x-=h.xSpd;h.y+=h.spd;});
+  qmarks.forEach(q=>q.x-=sp*0.48);
+  caves.forEach(c=>c.x-=sp);
+  const ox=-80;
+  hooks    =hooks   .filter(h=>h.x>ox);
+  bottles  =bottles .filter(b=>b.x>ox);
+  bears    =bears   .filter(b=>b.timer<b.duration+30);
+  nets     =nets    .filter(n=>n.x>ox);
+  rocks    =rocks   .filter(r=>r.x>-r.w-20);
+  worms    =worms   .filter(w=>w.x>ox);
+  frogs    =frogs   .filter(f=>f.x>ox);
+  hearts   =hearts  .filter(h=>h.y<WATER_BOT+20&&h.x>-40);
+  qmarks   =qmarks  .filter(q=>q.x>ox);
+  caves    =caves   .filter(c=>c.x+c.len>ox);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  UPDATE — JUMP
+// ─────────────────────────────────────────────────────────────
+function slopeHit(L) {
+  if (jumpPhase===0&&jX>L.LP_R&&jX<L.MP_L) {
+    const sy=L.LP_BANK+(L.MP_SRF-L.LP_BANK)*(jX-L.LP_R)/(L.MP_L-L.LP_R);
+    return jY>=sy;
+  }
+  if (jumpPhase===1&&jX>L.MP_R&&jX<L.RP_L) {
+    const sy=L.MP_SRF+(L.RP_SRF-L.MP_SRF)*(jX-L.MP_R)/(L.RP_L-L.MP_R);
+    return jY>=sy;
+  }
+  return false;
+}
+
+function updateJump() {
+  const barSpeed=0.010+(level-1)*0.0026;
+  if (jp===0) {
+    powerVal+=powerDir*barSpeed;
+    if (powerVal>=1){powerVal=1;powerDir=-1;}
+    if (powerVal<=0){powerVal=0;powerDir=1;}
+  }
+  if (jp===1) {
+    angleVal+=angleDir*(barSpeed*0.9);
+    if (angleVal>=1){angleVal=1;angleDir=-1;}
+    if (angleVal<=0){angleVal=0;angleDir=1;}
+  }
+  if (jp===2) {
+    if (player.spaceHeld) jVY-=0.28;
+    jVY+=JUMP_GRAV; jX+=jVX+windForce; jY+=jVY;
+    const L=jumpLayout();
+    const P=getJumpPonds(L);
+    if (jX>P.srcR+10) jHasLeft=true;
+    // Win: landed in target zone
+    if (jX>=P.tgtL+8&&jX<=P.tgtL+8+L.landW&&jY>=P.tgtSRF&&jY<P.tgtBANK) {
+      if (L.two&&jumpPhase===0) {
+        // Intermediate landing — start phase 2
+        sfxSplash(); score+=level*250;
+        jumpPhase=1; jp=0;
+        powerVal=0;powerDir=1;angleVal=0;angleDir=1;
+        jX=L.MP_L+55; jY=L.MP_SRF+28;
+        jVX=0;jVY=0;jHasLeft=false; generateWind();
+      } else {
+        jp=3; jumpResult='win'; jumpTimer=0; sfxSplash(); score+=level*500;
+      }
+    } else if (
+      (jX>=P.tgtL-14&&jX<=P.tgtL+2&&jY>=P.tgtSRF)||              // hit cliff wall
+      (jY>=P.srcBANK&&jX>P.srcR-10&&jX<P.tgtL+4)||                // fell in gap
+      (jHasLeft&&jY>=P.srcSRF&&jX<=P.srcR)||                       // fell back into source
+      (jX>P.tgtL+8+L.landW&&jY>=P.tgtSRF&&jX<=P.tgtR)||           // overshot landing zone
+      (L.two&&slopeHit(L))||                                        // hit a slope ramp
+      jY>H+20||jX>W+40
+    ) {
+      jp=3; jumpResult='fail'; jumpTimer=0; sfxMiss();
+      score=Math.max(0,Math.floor(score*0.95)); jumpAttempts++;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  INPUT
+// ─────────────────────────────────────────────────────────────
+let spaceDown=false;
+document.addEventListener('keydown',e=>{
+  if (e.code==='Space') {
+    e.preventDefault(); player.spaceHeld=true;
+    if (!spaceDown) { spaceDown=true; handleSpace(); }
+  }
+  if (state==='QUESTION') {
+    if (qResult!==null) { dismissQuestion(); return; }
+    const map={KeyA:0,KeyB:1,KeyC:2,KeyD:3};
+    const idx=map[e.code];
+    if (idx!==undefined&&idx<curQ.o.length) answerQ(idx);
+  }
+});
+document.addEventListener('keyup',e=>{
+  if (e.code==='Space') { spaceDown=false; player.spaceHeld=false; }
+  if (e.code==='KeyW') boostHeld=false;
+});
+document.addEventListener('keydown',e=>{
+  if (e.code==='KeyW'&&state==='PLAYING') { e.preventDefault(); boostHeld=true; }
+},true);
+canvas.addEventListener('click',e=>{
+  const rect=canvas.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(W/rect.width);
+  const my=(e.clientY-rect.top)*(H/rect.height);
+  if (state==='QUESTION') {
+    if (qResult!==null) { dismissQuestion(); return; }
+    optPositions(curQ.o.length).forEach(([ox,oy,ow,oh],i)=>{
+      if (mx>=ox&&mx<=ox+ow&&my>=oy&&my<=oy+oh) { curQ._sel=i; answerQ(i); }
+    });
+  }
+  if (state==='START')    startGame();
+  if (state==='GAMEOVER') initGame();
+});
+
+function handleSpace() {
+  if (state==='START')    { startGame(); return; }
+  if (state==='GAMEOVER') { initGame();  return; }
+  if (state==='QUESTION') { if (qResult!==null) dismissQuestion(); return; }
+  if (state==='JUMP') {
+    if (jp===0) { jp=1; }
+    else if (jp===1) {
+      jp=2;
+      const spd=getJumpSpeed(),ang=getJumpAngle();
+      jVX=Math.cos(ang)*spd; jVY=Math.sin(ang)*spd;
+    } else if (jp===3) {
+      if (jumpResult==='win') { level++; strength=0; startLevel(); }
+      else {
+        const L=jumpLayout();
+        jp=0;powerVal=0;powerDir=1;angleVal=0;angleDir=1;jVX=0;jVY=0;jHasLeft=false;
+        if (L.two&&jumpPhase===1) { jX=L.MP_L+55; jY=L.MP_SRF+28; }
+        else { jumpPhase=0; jX=L.salmonStartX; jY=L.salmonStartY; }
+        generateWind();
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  INIT / LEVEL START
+// ─────────────────────────────────────────────────────────────
+function initGame() {
+  level=1; score=0; health=10; strength=0; askedQs.clear();
+  startLevel();
+}
+function startGame() { initGame(); }
+function startLevel() {
+  state='PLAYING';
+  scrollDist=0; levelLength=5200+level*900;
+  hooks=[];bottles=[];bears=[];nets=[];rocks=[];
+  worms=[];frogs=[];hearts=[];qmarks=[];caves=[];
+  resetST();
+  player.y=290; player.vy=0;
+  stunTimer=0; invincible=90; awaitingStrength=false;
+  startMusic();
+}
+function startJump() {
+  state='JUMP';
+  jp=0; powerVal=0; powerDir=1; angleVal=0; angleDir=1;
+  jumpPhase=0;
+  const L=jumpLayout();
+  jX=L.salmonStartX; jY=L.salmonStartY;
+  jVX=0; jVY=0; jumpResult=''; jumpTimer=0; jumpAttempts=0; jHasLeft=false;
+  generateWind();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  MAIN LOOP
+// ─────────────────────────────────────────────────────────────
+initBubbles();
+
+function loop() {
+  ctx.clearRect(0,0,W,H);
+
+  if (state==='START') {
+    drawBackground(); updateBubbles(); drawBubbles();
+    drawStartScreen();
+  }
+  else if (state==='PLAYING') {
+    updatePlayer(); updateObjects(); spawnObjects(); checkCollisions();
+    updateBubbles(); drawBackground(); drawBubbles();
+    caves.forEach(drawCave);
+    nets.forEach(drawNet); rocks.forEach(drawRock); hooks.forEach(drawHook);
+    qmarks.forEach(drawQMark); hearts.forEach(drawHeart); worms.forEach(drawWorm);
+    frogs.forEach(drawFrog); bottles.forEach(drawBottle); bears.forEach(drawBearPaw);
+    // Speed lines when boosting
+    if (boostHeld&&strength>0) {
+      const lineSeeds=[1.2,2.5,0.7,3.8,1.9,3.1,0.3];
+      ctx.lineCap='round';
+      lineSeeds.forEach((s,i)=>{
+        const ly=player.y-30+i*10+Math.sin(t*0.18+s)*6;
+        const llen=18+Math.sin(t*0.25+s*2)*10;
+        const alpha=0.3+Math.sin(t*0.2+s)*0.2;
+        ctx.strokeStyle=`rgba(255,220,80,${alpha})`;
+        ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.moveTo(player.x-50-llen,ly); ctx.lineTo(player.x-52,ly); ctx.stroke();
+      });
+    }
+    drawSalmon(player.x,player.y);
+    drawStunEffect(); drawHUD();
+    if (scrollDist>=levelLength&&state==='PLAYING'&&!awaitingStrength) {
+      if (strength>=jumpThreshold()) startJump();
+      else { awaitingStrength=true; triggerStrengthQuestion(); }
+    }
+  }
+  else if (state==='QUESTION') {
+    drawBackground(); drawBubbles();
+    caves.forEach(drawCave);
+    nets.forEach(drawNet); rocks.forEach(drawRock); hooks.forEach(drawHook);
+    qmarks.forEach(drawQMark); hearts.forEach(drawHeart); worms.forEach(drawWorm);
+    frogs.forEach(drawFrog); bottles.forEach(drawBottle); bears.forEach(drawBearPaw);
+    drawSalmon(player.x,player.y); drawHUD(); drawQuestion();
+    if (qResult!==null) { qTimer--; if(qTimer<=0) dismissQuestion(); }
+  }
+  else if (state==='JUMP') {
+    updateBubbles(0,H); updateJump(); drawJumpScene();
+  }
+  else if (state==='GAMEOVER') {
+    drawBackground(); updateBubbles(); drawBubbles();
+    drawGameOver();
+  }
+  t++;
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>

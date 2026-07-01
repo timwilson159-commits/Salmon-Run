@@ -57,11 +57,12 @@ const COLL_R    = 8;
 // ── Object pools ─────────────────────────────────────────────
 let hooks = [], bottles = [], bears = [], nets = [], rocks = [];
 let worms = [], frogs  = [], hearts= [], qmarks= [], caves = [];
+let popups = [];
 
 // ── Spawn counters ────────────────────────────────────────────
 let ST = {};
 function resetST() {
-  ST = { hook:180, bottle:150, bear:600, net:1400, rock:280, worm:52, heart:280, cave:900 };
+  ST = { hook:180, bottle:150, bear:600, net:1400, rock:280, worm:74, heart:280, cave:900 };
 }
 
 // ── Scroll speed ──────────────────────────────────────────────
@@ -79,7 +80,7 @@ let stunTimer = 0, invincible = 0;
 let awaitingStrength = false;
 
 // ── Question state ────────────────────────────────────────────
-let curQ = null, qResult = null, qTimer = 0;
+let curQ = null, qResult = null;
 
 // ── Jump state ────────────────────────────────────────────────
 let jp = 0;  // 0=power 1=angle 2=flying 3=result
@@ -613,7 +614,7 @@ function drawHook(h) {
 
 function drawBottle(b) {
   const tilt=Math.sin(t*0.05+b.x*0.012)*0.28;
-  ctx.save(); ctx.translate(b.x,b.y); ctx.rotate(tilt); ctx.scale(0.5,0.5);
+  ctx.save(); ctx.translate(b.x,b.y); ctx.rotate(tilt); ctx.scale(0.625,0.625);
   ctx.fillStyle='rgba(140,215,255,0.55)'; ctx.strokeStyle='rgba(80,160,210,0.8)'; ctx.lineWidth=3;
   ctx.beginPath(); ctx.roundRect(-10,-25,20,38,4); ctx.fill(); ctx.stroke();
   ctx.fillStyle='rgba(120,195,240,0.65)';
@@ -621,7 +622,7 @@ function drawBottle(b) {
   ctx.fillStyle='#FF3333'; ctx.beginPath(); ctx.roundRect(-5,-38,10,7,2); ctx.fill();
   ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.fillRect(-8,-14,5,18);
   ctx.restore();
-  b.hx=b.x; b.hy=b.y; b.hr=5;
+  b.hx=b.x; b.hy=b.y; b.hr=6.25;
 }
 
 function drawBearPaw(bear) {
@@ -745,27 +746,41 @@ function drawQMark(q) {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  POINT POPUPS
+// ─────────────────────────────────────────────────────────────
+function updatePopups() {
+  for (let i=popups.length-1;i>=0;i--) {
+    const p=popups[i];
+    p.y-=0.7; p.life--;
+    if (p.life<=0) popups.splice(i,1);
+  }
+}
+function drawPopups() {
+  for (const p of popups) {
+    const a=Math.max(0,p.life/48);
+    ctx.save();
+    ctx.shadowColor=`rgba(${p.col},${a})`; ctx.shadowBlur=14;
+    ctx.fillStyle=`rgba(${p.col},${a})`;
+    ctx.font='bold 18px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(p.text,p.x,p.y);
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  HUD
 // ─────────────────────────────────────────────────────────────
 function drawHUD() {
   ctx.fillStyle='rgba(0,0,0,0.5)';
-  ctx.beginPath(); ctx.roundRect(10,10,322,36,8); ctx.fill();
-  for (let i=0;i<10;i++) {
-    const hx=16+i*30, hy=16;
-    ctx.save(); ctx.translate(hx,hy); ctx.scale(0.88,0.88);
-    if (i<health) {
-      ctx.fillStyle='#FF2255';
-      ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
-      ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
-      ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.fill();
-    } else {
-      ctx.strokeStyle='#441122'; ctx.lineWidth=2;
-      ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
-      ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
-      ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.stroke();
-    }
-    ctx.restore();
-  }
+  ctx.beginPath(); ctx.roundRect(10,10,110,36,8); ctx.fill();
+  ctx.save(); ctx.translate(26,28); ctx.scale(1.05,1.05);
+  ctx.fillStyle='#FF2255';
+  ctx.beginPath(); ctx.moveTo(0,4); ctx.bezierCurveTo(-2,-4,-15,-4,-15,5);
+  ctx.bezierCurveTo(-15,13,0,19,0,19); ctx.bezierCurveTo(0,19,15,13,15,5);
+  ctx.bezierCurveTo(15,-4,2,-4,0,4); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle='white'; ctx.font='bold 20px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('x'+health,50,29);
 
   ctx.fillStyle='rgba(0,0,0,0.5)';
   ctx.beginPath(); ctx.roundRect(10,54,300,28,8); ctx.fill();
@@ -882,12 +897,12 @@ function spawnObjects() {
     if (rnd>0.9) { col='#FFD700';pts=250; }
     else if (rnd>0.55) { col='#CC2200';pts=100; }
     worms.push({ x:W+20, y:rn(WATER_TOP+55,WATER_BOT-70), col, pts, wave:Math.random()*6.28 });
-    ST.worm=ri(52,98)/sm;
+    ST.worm=ri(74,140)/sm;
     if (Math.random()<0.05) frogs.push({ x:W+80+Math.random()*80, y:rn(WATER_TOP+60,WATER_BOT-80) });
   }
   ST.heart--;
   if (ST.heart<=0) {
-    hearts.push({ x:W+60, y:rn(WATER_TOP+30,WATER_BOT-60), spd:rn(0.4,0.8), xSpd:scrollSpeed() });
+    hearts.push({ x:W+60, y:rn(WATER_TOP+40,WATER_BOT-60), vx:-rn(1.1,2.0), vy:rn(-1,1), turnT:ri(30,70) });
     ST.heart=ri(290,480);
   }
   // Q-marks: max 2 on screen at a time
@@ -994,6 +1009,7 @@ function checkCollisions() {
     const f=frogs[i];
     if (cc(px,py,18,f.hx||f.x,f.hy||f.y,20)) {
       score+=2500; sfxFrog(); frogs.splice(i,1);
+      popups.push({ x:f.hx||f.x, y:(f.hy||f.y)-12, text:'+2500', col:'110,255,180', life:48 });
     }
   }
   for (let i=hearts.length-1;i>=0;i--) {
@@ -1041,11 +1057,12 @@ function answerQ(idx) {
   curQ._sel=idx;
   if (idx===curQ.a) {
     qResult='correct'; sfxRight();
-    strength=Math.min(100,strength+20); score+=250;
+    const strGain = curQ._diff==='red'?40:curQ._diff==='yellow'?30:20;
+    curQ._strGain=strGain;
+    strength=Math.min(100,strength+strGain); score+=250;
   } else {
-    qResult='wrong'; sfxWrong(); takeDamage();
+    qResult='wrong'; sfxWrong(); score=Math.max(0,score-200);
   }
-  qTimer=100;
 }
 function triggerStrengthQuestion() {
   const rd=Math.random();
@@ -1094,12 +1111,12 @@ function drawQuestion() {
   const keyHint='A / B'+(curQ.o.length>2?' / C':'')+(curQ.o.length>3?' / D':'');
   if (qResult==='correct') {
     ctx.fillStyle='#44FF88'; ctx.font='bold 21px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('✓  Correct!  +20 Strength  +250 pts',W/2,436);
+    ctx.fillText(`✓  Correct!  +${curQ._strGain} Strength  +250 pts`,W/2,436);
     ctx.fillStyle='rgba(100,255,160,0.7)'; ctx.font='13px Arial';
     ctx.fillText('Click or any key to continue',W/2,461);
   } else if (qResult==='wrong') {
     ctx.fillStyle='#FF5555'; ctx.font='bold 21px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('✗  Wrong answer  —1 Health',W/2,436);
+    ctx.fillText('✗  Wrong answer  −200 pts',W/2,436);
     ctx.fillStyle='rgba(255,150,150,0.7)'; ctx.font='13px Arial';
     ctx.fillText('Click or any key to continue',W/2,461);
   } else {
@@ -1133,8 +1150,11 @@ function wrapText(text,cx,y,maxW,lineH) {
 // ─────────────────────────────────────────────────────────────
 function getJumpSpeed() { return powerVal*powerVal*22; }
 function getJumpAngle() { return -Math.PI*(0.12+angleVal*0.38); }
+const JUMP_ZOOM = 0.8;
 
 function drawJumpScene() {
+  ctx.save();
+  ctx.translate(W/2,H/2); ctx.scale(JUMP_ZOOM,JUMP_ZOOM); ctx.translate(-W/2,-H/2);
   const L=jumpLayout();
   const P=getJumpPonds(L);
   ctx.fillStyle='#5870E8'; ctx.fillRect(0,0,W,H);
@@ -1234,7 +1254,7 @@ function drawJumpScene() {
     ctx.fillText('LOCKED',pbX+pbW/2,pbY+pbH+21);
   } else {
     ctx.fillStyle='#7070AA'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
-    ctx.fillText('[SPACE]',pbX+pbW/2,pbY+pbH+21);
+    ctx.fillText('[ANY KEY]',pbX+pbW/2,pbY+pbH+21);
   }
 
   // Angle dial
@@ -1262,7 +1282,7 @@ function drawJumpScene() {
     ctx.fillText('LOCKED',acX,acY+8);
   } else if (jp===0) {
     ctx.fillStyle='#7070AA'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
-    ctx.fillText('[SPACE]',acX,acY+8);
+    ctx.fillText('[ANY KEY]',acX,acY+8);
   }
 
   // Trajectory preview (accounts for wind)
@@ -1283,7 +1303,7 @@ function drawJumpScene() {
   // Phase prompt
   if (jp<2) {
     const ph=L.two?`  [Jump ${jumpPhase+1}/2]`:'';
-    const prompts=['Stop the POWER bar!  [SPACE]'+ph,'Set ANGLE, then LAUNCH  [SPACE]  ·  Hold SPACE to steer up'];
+    const prompts=['Stop the POWER bar!  [ANY KEY]'+ph,'Set ANGLE, then LAUNCH  [ANY KEY]  ·  Hold key to steer up'];
     ctx.fillStyle='rgba(0,6,24,0.9)'; ctx.fillRect(208,13,484,30);
     ctx.fillStyle='#AACCFF'; ctx.font='bold 12px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(prompts[jp],450,28);
@@ -1300,7 +1320,7 @@ function drawJumpScene() {
       ctx.fillStyle=`rgba(180,255,180,${al})`; ctx.font='bold 20px "Courier New"';
       ctx.fillText('+'+(level*500).toLocaleString()+' PTS  ·  LEVEL UP!',W/2,282);
       ctx.font='12px "Courier New"'; ctx.fillStyle=`rgba(160,255,160,${al})`;
-      ctx.fillText('[SPACE] to continue',W/2,320);
+      ctx.fillText('[ANY KEY] to continue',W/2,320);
     } else {
       ctx.fillStyle=`rgba(60,0,0,${al*0.85})`; ctx.fillRect(200,155,500,200);
       ctx.fillStyle=`rgba(255,80,80,${al})`; ctx.font='bold 42px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -1308,7 +1328,7 @@ function drawJumpScene() {
       ctx.fillStyle=`rgba(255,190,190,${al})`; ctx.font='bold 20px "Courier New"';
       ctx.fillText('-5% SCORE  (attempt '+(jumpAttempts+1)+')',W/2,282);
       ctx.font='12px "Courier New"'; ctx.fillStyle=`rgba(255,170,170,${al})`;
-      ctx.fillText('[SPACE] to try again',W/2,320);
+      ctx.fillText('[ANY KEY] to try again',W/2,320);
     }
   }
 
@@ -1321,6 +1341,7 @@ function drawJumpScene() {
   ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(W-118,60,108,30);
   ctx.fillStyle='white'; ctx.font='bold 11px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(score.toLocaleString(),W-64,75);
+  ctx.restore();
 }
 
 function draw8bitSalmon(x,y,ang) {
@@ -1348,7 +1369,7 @@ function drawStartScreen() {
   ctx.fillStyle='#FFD700'; ctx.font='bold 37px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText('SALMON RUN',W/2,38);
   ctx.fillStyle='#88DDFF'; ctx.font='15px Arial';
-  ctx.fillText('A Fish Biology Adventure  —  Spacebar only!',W/2,66);
+  ctx.fillText('A Fish Biology Adventure  —  Press any key!',W/2,66);
 
   const COLS=[{x:192,label:'COLLECT',col:'#44FF88'},{x:450,label:'AVOID',col:'#FF5555'},{x:712,label:'STRENGTH',col:'#FFD700'}];
   COLS.forEach(c=>{
@@ -1396,15 +1417,15 @@ function drawStartScreen() {
   ctx.strokeStyle='#D0D0D0'; ctx.lineWidth=3; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(sw2,48); ctx.arc(sw2-6,59,10,-Math.PI*.5,Math.PI*.65); ctx.stroke();
   ctx.restore();
-  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='top';
-  ctx.fillText('Fishing hooks  −1 hp',ax-76,138);
-  ctx.fillStyle='#FF9999'; ctx.font='11px Arial'; ctx.fillText('(swing at all depths)',ax-76,158);
+  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('Fishing hooks  −1 hp',ax-76,171);
+  ctx.fillStyle='#FF9999'; ctx.font='11px Arial'; ctx.fillText('(swing at all depths)',ax-76,189);
   ctx.save(); ctx.translate(ax-100,244); ctx.rotate(Math.sin(t*.05)*.25);
   ctx.fillStyle='rgba(140,215,255,.55)'; ctx.strokeStyle='rgba(80,160,210,.8)'; ctx.lineWidth=1.5;
   ctx.beginPath(); ctx.roundRect(-9,-22,18,34,3); ctx.fill(); ctx.stroke();
   ctx.fillStyle='#FF3333'; ctx.beginPath(); ctx.roundRect(-4,-33,8,6,2); ctx.fill();
   ctx.restore();
-  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
   ctx.fillText('Plastic bottles  −1 hp',ax-76,234);
   ctx.fillStyle='#FFAAAA'; ctx.font='11px Arial'; ctx.textAlign='center';
   ctx.fillText('+ bears, rocks & nets!',ax,328);
@@ -1422,21 +1443,21 @@ function drawStartScreen() {
     ctx.beginPath(); ctx.arc(stx-110,qy,12,0,Math.PI*2); ctx.fillStyle=QC[d]; ctx.fill();
     ctx.fillStyle='white'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('?',stx-110,qy+1);
-    const lbl=['Easy Q  +20 str','Medium Q  +20 str','Hard Q  +20 str'][i];
+    const lbl=['Easy Q  +20 str','Medium Q  +30 str','Hard Q  +40 str'][i];
     ctx.fillStyle='white'; ctx.font='12px Arial'; ctx.textAlign='left'; ctx.textBaseline='middle';
     ctx.fillText(lbl,stx-90,qy);
   });
   ctx.fillStyle='#FF8888'; ctx.font='12px Arial'; ctx.textAlign='left';
-  ctx.fillText('Wrong answer = −1 health',stx-120,363);
+  ctx.fillText('Wrong answer = −200 pts',stx-120,363);
 
   // Jump instructions bar
   ctx.fillStyle='rgba(0,16,50,0.9)';
   ctx.beginPath(); ctx.roundRect(108,396,684,62,10); ctx.fill();
   ctx.strokeStyle='#88CCFF'; ctx.lineWidth=1.5; ctx.stroke();
   ctx.fillStyle='#88CCFF'; ctx.font='bold 13px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('AT THE WATERFALL:  SPACE = lock POWER  →  SPACE = lock ANGLE  →  LAUNCH!',W/2,416);
+  ctx.fillText('AT THE WATERFALL:  any key = lock POWER  →  lock ANGLE  →  LAUNCH!',W/2,416);
   ctx.fillStyle='#CCDDFF'; ctx.font='12px Arial';
-  ctx.fillText('Hold SPACE mid-air to steer up  |  Fill bar past orange marker first',W/2,441);
+  ctx.fillText('Hold any key mid-air to steer up  |  Fill bar past orange marker first',W/2,441);
 
   // Start button
   const bpulse=.87+Math.sin(t*.08)*.13;
@@ -1445,7 +1466,7 @@ function drawStartScreen() {
   ctx.beginPath(); ctx.roundRect(W/2-148,470,296,50,12); ctx.fill();
   ctx.strokeStyle='#88FFCC'; ctx.lineWidth=2.5; ctx.stroke();
   ctx.fillStyle='white'; ctx.font='bold 18px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('PRESS SPACE TO SWIM!',W/2,495);
+  ctx.fillText('PRESS ANY KEY TO SWIM!',W/2,495);
   ctx.restore();
 
   drawSalmon(70+Math.sin(t*.022)*20,450+Math.sin(t*.038)*10,.8);
@@ -1474,7 +1495,7 @@ function drawGameOver() {
   ctx.fillStyle='#88DDFF'; ctx.font='18px Arial';
   ctx.fillText('Reached Level '+level,W/2,H/2+22);
   ctx.fillStyle='#AAAACC'; ctx.font='14px Arial';
-  ctx.fillText('PRESS SPACE to try again',W/2,H/2+68);
+  ctx.fillText('PRESS ANY KEY to try again',W/2,H/2+68);
   ctx.save(); ctx.translate(W/2,H/2+120); ctx.rotate(Math.PI);
   drawSalmon(0,0,.2);
   ctx.restore();
@@ -1506,7 +1527,13 @@ function updateObjects() {
   rocks.forEach(r=>r.x-=sp);
   worms.forEach(w=>{w.x-=sp*0.62;w.y+=Math.sin(t*0.09+w.wave)*0.35;});
   frogs.forEach(f=>f.x-=sp*0.52);
-  hearts.forEach(h=>{h.x-=h.xSpd;h.y+=h.spd;});
+  hearts.forEach(h=>{
+    h.turnT--;
+    if (h.turnT<=0) { h.vy=rn(-1.3,1.3); h.turnT=ri(30,70); }
+    h.x+=h.vx; h.y+=h.vy;
+    if (h.y<WATER_TOP+20) { h.y=WATER_TOP+20; h.vy=Math.abs(h.vy); }
+    if (h.y>WATER_BOT-20) { h.y=WATER_BOT-20; h.vy=-Math.abs(h.vy); }
+  });
   qmarks.forEach(q=>q.x-=sp*0.48);
   caves.forEach(c=>c.x-=sp);
   const ox=-80;
@@ -1584,12 +1611,14 @@ function updateJump() {
 // ─────────────────────────────────────────────────────────────
 //  INPUT
 // ─────────────────────────────────────────────────────────────
-let spaceDown=false;
+const SCROLL_KEYS=new Set(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+const keysDown=new Set();
 document.addEventListener('keydown',e=>{
-  if (e.code==='Space') {
-    e.preventDefault(); player.spaceHeld=true;
-    if (!spaceDown) { spaceDown=true; handleSpace(); }
-  }
+  if (SCROLL_KEYS.has(e.code)) e.preventDefault();
+  const wasEmpty=keysDown.size===0;
+  keysDown.add(e.code);
+  player.spaceHeld=true;
+  if (wasEmpty) handleSpace();
   if (state==='QUESTION') {
     if (qResult!==null) { dismissQuestion(); return; }
     const map={KeyA:0,KeyB:1,KeyC:2,KeyD:3};
@@ -1598,7 +1627,8 @@ document.addEventListener('keydown',e=>{
   }
 });
 document.addEventListener('keyup',e=>{
-  if (e.code==='Space') { spaceDown=false; player.spaceHeld=false; }
+  keysDown.delete(e.code);
+  player.spaceHeld=keysDown.size>0;
   if (e.code==='KeyW') boostHeld=false;
 });
 document.addEventListener('keydown',e=>{
@@ -1653,7 +1683,7 @@ function startLevel() {
   state='PLAYING';
   scrollDist=0; levelLength=5200+level*900;
   hooks=[];bottles=[];bears=[];nets=[];rocks=[];
-  worms=[];frogs=[];hearts=[];qmarks=[];caves=[];
+  worms=[];frogs=[];hearts=[];qmarks=[];caves=[];popups=[];
   resetST();
   player.y=290; player.vy=0;
   stunTimer=0; invincible=90; awaitingStrength=false;
@@ -1682,7 +1712,7 @@ function loop() {
     drawStartScreen();
   }
   else if (state==='PLAYING') {
-    updatePlayer(); updateObjects(); spawnObjects(); checkCollisions();
+    updatePlayer(); updateObjects(); spawnObjects(); checkCollisions(); updatePopups();
     updateBubbles(); drawBackground(); drawBubbles();
     caves.forEach(drawCave);
     nets.forEach(drawNet); rocks.forEach(drawRock); hooks.forEach(drawHook);
@@ -1702,6 +1732,7 @@ function loop() {
       });
     }
     drawSalmon(player.x,player.y);
+    drawPopups();
     drawStunEffect(); drawHUD();
     if (scrollDist>=levelLength&&state==='PLAYING'&&!awaitingStrength) {
       if (strength>=jumpThreshold()) startJump();
@@ -1715,7 +1746,6 @@ function loop() {
     qmarks.forEach(drawQMark); hearts.forEach(drawHeart); worms.forEach(drawWorm);
     frogs.forEach(drawFrog); bottles.forEach(drawBottle); bears.forEach(drawBearPaw);
     drawSalmon(player.x,player.y); drawHUD(); drawQuestion();
-    if (qResult!==null) { qTimer--; if(qTimer<=0) dismissQuestion(); }
   }
   else if (state==='JUMP') {
     updateBubbles(0,H); updateJump(); drawJumpScene();
